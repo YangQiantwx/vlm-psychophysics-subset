@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vlm-psychophysics-subset"
+version = "0.2.0"
+description = "Frozen 1480-trial visual psychophysics subset and reproducible evaluation"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "shapely>=2.0",
+    "av>=14",
+    "matplotlib>=3.8",
+    "pillow>=10",
+    "opencv-python-headless>=4.8",
+]
+
+[project.optional-dependencies]
+download = ["huggingface-hub>=1.0", "hf-xet>=1.1"]
+inference = [
+    "av @ https://files.pythonhosted.org/packages/77/43/96b35170bf2e64e00a41748c6400ff73232dc0fc62ded283679fb07c7fe0/av-17.1.0-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=f9a65d1f48b818323fb411e80358f89d77dec340b01d27c6b2dfbb9cbf4b779f",
+    "flashinfer-python @ https://files.pythonhosted.org/packages/b6/ad/da1fc7644b28ab82db922021955a0c85c8d6b3b1d6db224a13ef65cef85e/flashinfer_python-0.7.2.post1-py3-none-any.whl#sha256=bfdc18b9e1e4d8d0730fe4343dc0e284cd0c160086de80f99888bc4867922d49",
+    "numpy @ https://files.pythonhosted.org/packages/b6/23/2a1b231b8ff672b4c450dac27164a8b2ca7d9b7144f9c02d2396518352eb/numpy-2.3.5-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=0d8163f43acde9a73c2a33605353a4f1bc4798745a8b1d73183b28e5b435ae28",
+    "opencv-python-headless @ https://files.pythonhosted.org/packages/9b/21/f6ef335f6e65724aa78b8d792b48d40a48c381715f1e62f5a5049e09d07e/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl#sha256=ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37",
+    "pillow @ https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca",
+    "safetensors @ https://files.pythonhosted.org/packages/28/50/f203ff3a3ddfe19308efc83c5a3a29ed02bf786732ec35e68bf9162f3365/safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=fd6f3f93c9a0a7cc2788ee63fb763353d4bd2e89b0751bc78fcf7dda00bea774",
+    "tokenizers @ https://files.pythonhosted.org/packages/3a/40/6706b82693715581457c6d5423eaa7faae576bb0526c5738a57085eb4449/tokenizers-0.23.3-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=376851d22bcf9d650a5c3090bb83e6cf9e895fbf0595369fa4cd43c1f69b5f87",
+    "torch @ https://files.pythonhosted.org/packages/15/71/49399acd41f750a906c686bd23c08a2001ccb8dd25f2971003c2ed89c1dd/torch-2.14.0-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=fecffb58f51fd643d213acd68da21cc3fc19bea05a3bc64b4ee55128f47a4963",
+    "torchvision @ https://files.pythonhosted.org/packages/27/d7/3cf1992414fd712af4865ae5f8f5758d9003c1ed82624908d54f7afb4342/torchvision-0.29.0-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=0e631a2f8b24732672d35224d2574ff89a78d56bef5364ef6094a625fa5f1771",
+    "transformers @ https://files.pythonhosted.org/packages/e8/d0/c502b60d684adbd98a8dc7d5bb866842772b816ac4354e4608be240041ae/transformers-5.17.0-py3-none-any.whl#sha256=78ec1ce21579b38dfb83950a0658cd119f87212a2fcfdff478096ce9d6c03801",
+    "triton @ https://files.pythonhosted.org/packages/c1/09/b7012e5bfae67640f268aa584caa80fe1674f6b0da949046b679972c33e3/triton-3.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=e91ffa46d095b252248297292dd22bcbacd53a125a0c2eefbbbf74925a320bc3",
+    "vllm @ https://wheels.vllm.ai/f4fd1ab68e2ba3a76bf6b903662eb6a8ee8202ab/vllm-0.33.0rc1.dev175%2Bgf4fd1ab68-cp38-abi3-manylinux_2_28_x86_64.whl#sha256=9e6deb5cf21db53325f0467eb2704c80e90d7a4f0e35532243b7a663a9dd2148",
+    "xgrammar @ https://files.pythonhosted.org/packages/2c/2e/bab212484b84c296974168021693278f8d73d87ebccc4a6cc04e5ae2a061/xgrammar-0.2.8-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=4045b096735bb2523e0d874039a55994c1b390620d547c4a0d4f43b9a106177b",
+]
+test = ["pytest>=8"]
+
+[project.scripts]
+model-api = "vlm_psychophysics.api.cli:main"
+psychophysics = "vlm_psychophysics.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["vlm_psychophysics*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

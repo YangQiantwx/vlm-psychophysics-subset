@@ -1,0 +1,128 @@
+{
+  "repo": "DrQY/vlm-psychophysics-subset",
+  "revision": "f562d61b4703b744c2f00f66a7ebabeacc4e0a0a",
+  "commit_url": "https://huggingface.co/datasets/DrQY/vlm-psychophysics-subset/commit/f562d61b4703b744c2f00f66a7ebabeacc4e0a0a",
+  "private": false,
+  "copied_media": 4416,
+  "metadata_files": 61,
+  "index_sha256": "dde07c56f69ba3668fd01a495b5ba6442f45e71ae5c90e656453347322393300",
+  "total_files_with_gitattributes": 4478,
+  "media_verified": 4416,
+  "all_media_match_parent_lfs_sha256_size_xet_object": true,
+  "metadata_verified": 61,
+  "missing_or_extra_payload_files": 0,
+  "logical_payload_bytes": 3870064281,
+  "anonymous_repo_access_verified": true,
+  "validation": {
+    "cpu_tests_passed": 90,
+    "formal_scorer_full_rows": 203520,
+    "formal_scorer_subset_rows": 11840,
+    "score_differences": 0,
+    "api_video_planned_calls": 1480,
+    "api_static_planned_calls": 1346,
+    "local_linux_planned_calls": 2826,
+    "paid_api_calls": 0,
+    "source_regeneration_asset_fallback_verified": true
+  },
+  "public_download_smoke": {
+    "repo": "DrQY/vlm-psychophysics-subset",
+    "revision": "f562d61b4703b744c2f00f66a7ebabeacc4e0a0a",
+    "anonymous_media_files": 32,
+    "downloaded_bytes": 25207972,
+    "download_and_decode_seconds": 12.77,
+    "decoded_video_frames": 1800,
+    "samples": [
+      {
+        "scope": "classic/t1",
+        "sample_id": "t1_004d10c455cb7411025b",
+        "frames": 180,
+        "decoded_static_frames_match": 4,
+        "truth": "RIGHT",
+        "reference_first": true
+      },
+      {
+        "scope": "classic/t2",
+        "sample_id": "t2_007637c25875e651460f",
+        "frames": 180,
+        "decoded_static_frames_match": 1,
+        "truth": "RIGHT",
+        "reference_first": true
+      },
+      {
+        "scope": "classic/t3",
+        "sample_id": "t3_01f7b3c3c8ac6ca8bce0",
+        "frames": 180,
+        "decoded_static_frames_match": 1,
+        "truth": "RIGHT",
+        "reference_first": true
+      },
+      {
+        "scope": "classic/t4",
+        "sample_id": "classic-t4-mixed-v1-n16-l00-c05-left",
+        "frames": 180,
+        "decoded_static_frames_match": 2,
+        "truth": "LEFT",
+        "reference_first": true
+      },
+      {
+        "scope": "classic/t5",
+        "sample_id": "c5p1_047be5f6d68aeadf883e39fa",
+        "frames": 180,
+        "decoded_static_frames_match": 2,
+        "truth": "NO",
+        "reference_first": true
+      },
+      {
+        "scope": "natural/t1",
+        "sample_id": "n009a25a6bc7aa691644f5f06",
+        "frames": 180,
+        "decoded_static_frames_match": 4,
+        "truth": "LEFT",
+        "reference_first": true
+      },
+      {
+        "scope": "natural/t2",
+        "sample_id": "nt2_018b1c173312828d9ba26054",
+        "frames": 180,
+        "decoded_static_frames_match": 1,
+        "truth": "LEFT",
+        "reference_first": true
+      },
+      {
+        "scope": "natural/t3",
+        "sample_id": "n01292c06a644701ce113bbb9",
+        "frames": 180,
+        "decoded_static_frames_match": 1,
+        "truth": "LEFT",
+        "reference_first": true
+      },
+      {
+        "scope": "natural/t4",
+        "sample_id": "natural-t4-strict-v1-n16-distinct-l00-c05-left",
+        "frames": 180,
+        "decoded_static_frames_match": 2,
+        "truth": "LEFT",
+        "reference_first": true
+      },
+      {
+        "scope": "natural/t5",
+        "sample_id": "n5p1_0db69699a4ad995d721bc342",
+        "frames": 180,
+        "decoded_static_frames_match": 2,
+        "truth": "NO",
+        "reference_first": true
+      }
+    ]
+  },
+  "code_parent": {
+    "repo": "YangQiantwx/vlm-psychophysics",
+    "revision": "b87eaee92d6a424f1a895a1493462982840ca555"
+  },
+  "scientific_selection_sha256": "f6b9ce810197f8dec9acc5e1e0ab0e4631d19b1225b41412c338ceb93c13beec",
+  "unverified_gateway_fields": [
+    "account model availability",
+    "supported native video/mixed input",
+    "image count and request size limits",
+    "server processor/frame sampling/tensor identity"
+  ]
+}

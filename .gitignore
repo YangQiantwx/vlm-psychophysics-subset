@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+models/
+runs/
+outputs/
+*.mkv
+*.safetensors
+.env
+.DS_Store
+dataset/
+comparison-cache/
+release-staging/
