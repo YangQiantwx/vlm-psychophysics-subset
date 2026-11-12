@@ -27,7 +27,7 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 from .. import catalog as release
 from ..release import select_samples
 from . import native_video_api
-from .provider_api import ROUTES
+from .provider_api import ROUTES, messages_body
 
 SCHEMA = "provider-eval-v1"
 LEGACY_SCHEMA_SHA256 = "1b616bcee9cf4494f3e0befe71d6404fe1e643ea1b5573f9c3d6f32c5978bec6"
@@ -35,7 +35,8 @@ PROVIDER = "nvidia-internal"
 BASE_URL, KEY_ENV, _ = ROUTES[PROVIDER]
 NVIDIA_REPEAT_PRESET = "nvidia-repeat"
 NVIDIA_REPEAT_GENERATION = {"n": 1, "temperature": 0.0, "top_p": 1.0, "seed": 0}
-GATEWAY_VIDEO_DELIVERIES = ("native", "ordered-images")
+GATEWAY_FRAME_DELIVERIES = ("ordered-images", "video-frames")
+GATEWAY_VIDEO_DELIVERIES = ("native", *GATEWAY_FRAME_DELIVERIES)
 GATEWAY_IMAGE_DETAILS = ("auto", "low", "high", "original")
 GATEWAY_TOKEN_FIELDS = ("max_completion_tokens", "max_tokens")
 ORDERED_IMAGE_VIDEO_PROMPT_PREFIX = (
@@ -162,8 +163,11 @@ def build_plan(
 
 
 def requested_frame_settings(config):
-    if config.get("video_delivery") == "ordered-images":
-        return native_video_api.ordered_image_settings(PROVIDER)
+    if config.get("video_delivery") in GATEWAY_FRAME_DELIVERIES:
+        settings = native_video_api.ordered_image_settings(PROVIDER)
+        if config["video_delivery"] == "video-frames":
+            settings["delivery"] = "video_frame_list"
+        return settings
     settings = native_video_api.frame_settings(config["provider"], config.get("video_fps"))
     if config.get("preset") == NVIDIA_REPEAT_PRESET:
         return {
@@ -176,7 +180,7 @@ def requested_frame_settings(config):
 def configured(
     out, plan, model, max_tokens, provider=PROVIDER, all_frames=False,
     generation_parameters=None, preset=None,
-    *, video_delivery=None, image_detail=None, token_field=None,
+    *, video_delivery=None, image_detail=None, token_field=None, api_format=None,
 ):
     release.require(
         bool(model) and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]+", model)),
@@ -210,6 +214,12 @@ def configured(
         processor_visibility="not exposed by provider",
         answer_parser="single-label-v1",
     )
+    if api_format == "messages":
+        release.require(provider == PROVIDER and video_delivery in (None, "ordered-images"), "Messages uses ordered images")
+        release.require(not generation_parameters and image_detail is None, "Messages uses native provider defaults; omit Chat-only parameters")
+        release.require(token_field in (None, "max_tokens"), "Messages uses max_tokens")
+        token_field = "max_tokens"
+        config.update(api_format="messages", anthropic_api_version="2023-06-01")
     if hosted:
         config.update(
             video_fps=native_video_api.requested_fps(provider, model),
@@ -242,14 +252,16 @@ def configured(
         config["token_field"] = token_field or "max_completion_tokens"
         if not all_frames:
             config["pilot_admission"] = "completion_envelope"
-        if config["video_delivery"] == "ordered-images":
+        if config["video_delivery"] in GATEWAY_FRAME_DELIVERIES:
             config.update(
                 transport="ordered lossless PNG images in Chat Completions",
                 processor_visibility="client verifies the submitted frames; server processor is unobserved",
                 video_prompt_prefix=ORDERED_IMAGE_VIDEO_PROMPT_PREFIX,
-                video_delivery_settings=native_video_api.ordered_image_settings(PROVIDER),
+                video_delivery_settings=requested_frame_settings(config),
                 media_runtime={name: version(name) for name in ("av", "Pillow")},
             )
+            if config["video_delivery"] == "video-frames":
+                config["transport"] = "all 180 lossless PNGs in a Chat Completions video array"
             config["code_sha256"]["native_video_api.py"] = file_sha(
                 Path(native_video_api.__file__)
             )
@@ -261,6 +273,8 @@ def configured(
         config["code_sha256"]["native_video_api.py"] = file_sha(
             Path(native_video_api.__file__)
         )
+    if config.get("api_format") == "messages":
+        config["transport"] = "native Anthropic Messages with inline lossless PNG images"
     path = out / "config.json"
     if path.exists():
         release.require(
@@ -453,12 +467,12 @@ def transport(payload, credential, config=None):
         auth = {"Authorization": "Bearer " + credential}
         if project := os.environ.get("OPENAI_PROJECT_ID"):
             auth["OpenAI-Project"] = project
-    elif config and config["provider"] == "claude":
+    elif config and (config["provider"] == "claude" or config.get("api_format") == "messages"):
         endpoint += "/messages"
         timeout = 600
         auth = {
             "Authorization": "Bearer " + credential,
-            "anthropic-version": config["api_version"],
+            "anthropic-version": config.get("anthropic_api_version") or config["api_version"],
         }
         if workspace := os.environ.get("ANTHROPIC_WORKSPACE_ID"):
             auth["anthropic-workspace-id"] = workspace
@@ -543,7 +557,7 @@ def request_prompt(row, config):
 def request_body(row, config, media_root, *, download_missing=False):
     release.require(row["source"] == "public", "Select a published dataset trial.")
     provider = config.get("provider", PROVIDER)
-    gateway_frames = config.get("video_delivery") == "ordered-images"
+    gateway_frames = config.get("video_delivery") in GATEWAY_FRAME_DELIVERIES
     media = []
     frame_parts = []
     verified = []
@@ -569,14 +583,14 @@ def request_body(row, config, media_root, *, download_missing=False):
                     compression=native_video_api.PNG_COMPRESSION[provider],
                 )
                 part = {"type": "video", "video": images}
-                if provider == "qwen-frames":
+                if provider == "qwen-frames" or config.get("video_delivery") == "video-frames":
                     pixels = native_video_api.SOURCE_WIDTH * native_video_api.SOURCE_HEIGHT
                     part.update(
                         min_pixels=pixels,
                         max_pixels=pixels,
                         total_pixels=len(images) * pixels,
                     )
-                    if config["video_fps"] is not None:
+                    if config.get("video_fps") is not None:
                         part["fps"] = config["video_fps"]
                 frame_parts.append(part)
                 verified[-1]["ordered_frames"] = {
@@ -612,7 +626,9 @@ def request_body(row, config, media_root, *, download_missing=False):
             kind = "image_url" if mime == "image/png" else "video_url"
             parts.append({"type": kind, kind: {"url": f"data:{mime};base64,{data}"}})
         for part in frame_parts:
-            if part["type"] == "video":
+            if part["type"] == "video" and config.get("video_delivery") == "video-frames":
+                parts.append(part)
+            elif part["type"] == "video":
                 parts.extend({"type": "image_url", "image_url": {"url": url}} for url in part["video"])
             else:
                 parts.append(part)
@@ -632,6 +648,8 @@ def request_body(row, config, media_root, *, download_missing=False):
             body.update(config.get("frame_settings", {}))
     if provider not in native_video_api.FRAME_LISTS:
         body.update(generation)
+    if config.get("api_format") == "messages":
+        body = messages_body(body)
     payload = release.encoded(body)
     native_video_api.validate_payload_size(provider, config.get("endpoint"), len(payload))
     return payload, verified
@@ -705,7 +723,7 @@ def invoke(out, receipt, row, config, media_root, credential, expected_model, do
                         http_status,
                         row["choices"],
                         expected_model,
-                        config["provider"],
+                        "claude" if config.get("api_format") == "messages" else config["provider"],
                     ),
                 )
         except (OSError, HTTPException) as error:
@@ -783,7 +801,7 @@ def execution(out, plan, rows, args, pilot):
         "Set --execute and a positive --max-requests",
     )
     hosted = native_video_api.HOSTED.get(args.provider)
-    gateway_frames = getattr(args, "video_delivery", None) == "ordered-images"
+    gateway_frames = getattr(args, "video_delivery", None) in GATEWAY_FRAME_DELIVERIES
     if args.all_frames:
         release.require(
             not hosted or args.provider in native_video_api.FRAME_LISTS,
@@ -839,6 +857,7 @@ def execution(out, plan, rows, args, pilot):
         video_delivery=getattr(args, "video_delivery", None),
         image_detail=getattr(args, "image_detail", None),
         token_field=getattr(args, "token_field", None),
+        api_format=getattr(args, "api_format", None),
     )
     with closing(open_db(out)) as db:
         history = records(db)
@@ -1221,6 +1240,12 @@ def verify(archive, *, with_history=False):
         provider = PROVIDER
         if config:
             provider = config["provider"]
+            if "api_format" in config:
+                release.require(
+                    provider == PROVIDER and config["api_format"] == "messages"
+                    and config.get("anthropic_api_version") == "2023-06-01",
+                    "Unexpected gateway Messages configuration",
+                )
             release.require(
                 config["source_plan_sha256"] == plan["source_plan_sha256"],
                 "Run configuration differs from plan",
@@ -1237,7 +1262,7 @@ def verify(archive, *, with_history=False):
                     "Run configuration differs from provider",
                 )
                 native_video_api.vllm_endpoint(config["endpoint"])
-            gateway_frames = config.get("video_delivery") == "ordered-images"
+            gateway_frames = config.get("video_delivery") in GATEWAY_FRAME_DELIVERIES
             if "video_delivery" in config:
                 release.require(
                     provider == PROVIDER
@@ -1254,7 +1279,7 @@ def verify(archive, *, with_history=False):
             if gateway_frames:
                 release.require(
                     "video_prompt_prefix" in config
-                    and config.get("video_delivery_settings") == native_video_api.ordered_image_settings(PROVIDER),
+                    and config.get("video_delivery_settings") == requested_frame_settings(config),
                     "Ordered image configuration differs",
                 )
             if "video_prompt_prefix" in config:
@@ -1318,7 +1343,7 @@ def verify(archive, *, with_history=False):
                         size = entry["request_bytes"]
                         release.require(type(size) is int and size > 0, "Invalid request size")
                         native_video_api.validate_payload_size(provider, (config or {}).get("endpoint"), size)
-                    if provider in native_video_api.FRAME_LISTS or config.get("video_delivery") == "ordered-images":
+                    if provider in native_video_api.FRAME_LISTS or config.get("video_delivery") in GATEWAY_FRAME_DELIVERIES:
                         for actual in verified:
                             if actual["mime"] == "video/mp4":
                                 wire = actual["ordered_frames"]
@@ -1342,7 +1367,7 @@ def verify(archive, *, with_history=False):
                         entry["http_status"],
                         selected[key]["choices"],
                         None,
-                        provider,
+                        "claude" if config.get("api_format") == "messages" else provider,
                     )
                     if entry["status"] == "MODEL_ID_CHANGED":
                         changed_models.add(parsed["returned_model"])
@@ -1517,6 +1542,7 @@ def main(argv=None):
         "--token-field", choices=GATEWAY_TOKEN_FIELDS,
         help="NVIDIA Gateway output token field (default: max_completion_tokens).",
     )
+    parser.add_argument("--api-format", choices=("chat", "messages"))
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--temperature", type=float)
     parser.add_argument("--top-p", type=float)
@@ -1618,7 +1644,7 @@ def main(argv=None):
         args.provider != PROVIDER or args.preset
     ):
         parser.error("These transport options apply to NVIDIA Gateway without --preset.")
-    if args.video_delivery == "ordered-images" and args.sampled_video:
+    if args.video_delivery in GATEWAY_FRAME_DELIVERIES and args.sampled_video:
         parser.error("--sampled-video uses native video delivery.")
     args.download_metadata = bool(args.data_root and args.metadata_root is None)
     args.download_media = bool(args.data_root and args.media_root is None)

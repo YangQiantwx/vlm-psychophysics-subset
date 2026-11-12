@@ -67,9 +67,10 @@ def vllm_endpoint(base):
     require(
         (url.scheme == "https" or (local and url.scheme == "http"))
         and url.hostname
-        and url.path == "/v1"
+        and url.path.endswith("/v1")
+        and ".." not in url.path and "//" not in url.path
         and not any((url.username, url.password, url.query, url.fragment)),
-        "Set VLLM_BASE_URL to the HTTPS endpoint ending in /v1, or use a localhost tunnel",
+        "Use an HTTPS API base URL ending in /v1, or a localhost tunnel",
     )
     return base
 

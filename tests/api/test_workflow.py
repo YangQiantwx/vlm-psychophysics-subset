@@ -149,3 +149,103 @@ def test_completed_plan_rejects_changed_settings(workflow):
     w.settings.write_text(json.dumps(settings))
     assert cli.main(w.args) == 2
     assert len(w.sent) == 20
+
+
+@pytest.mark.parametrize('name', ['astra', 'opus', 'kimi', 'qwen', 'qwen-flash'])
+def test_model_shortcut_uses_vendor_fields_and_company_route(workflow, monkeypatch, name):
+    w = workflow
+    preset = cli.presets.PRESETS[name]
+    exact = 'company/vendor/' + preset['ids'][0]
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda endpoint, key: [exact])
+    sent = []
+    def transport(payload, key, config):
+        body = json.loads(payload)
+        sent.append(body)
+        assert body['model'] == exact and body[preset['token_field']] == 4096
+        assert key == 'private-test-credential'
+        parts = body['messages'][0]['content']
+        answer = 'YES' if parts[-1]['text'] == 'Match the target.' else 'LEFT'
+        assert 'temperature' not in body and 'top_p' not in body
+        if name == 'opus':
+            assert config['api_format'] == 'messages'
+            assert all(p['type'] == 'image' and p['source']['type'] == 'base64' for p in parts[:-1])
+            response = dict(id='fixture', model='served-version', stop_reason='end_turn',
+                            content=[dict(type='text', text=answer)])
+        else:
+            assert all(p['type'] == 'image_url' for p in parts[:-1])
+            if name == 'astra':
+                assert body['reasoning_effort'] == 'medium'
+                assert all(p['image_url']['detail'] == 'original' for p in parts[:-1])
+            elif name == 'kimi': assert body['reasoning_effort'] == 'low'
+            else: assert 'reasoning_effort' not in body
+            response = dict(id='fixture', model='served-version',
+                            choices=[dict(finish_reason='stop', message=dict(content=answer))])
+        return 200, {}, json.dumps(response).encode()
+    monkeypatch.setattr(engine, 'transport', transport)
+    assert cli.main([name, *w.args, '--input', 'static']) == 0
+    assert len(sent) == 10
+    assert not (w.out / 'video').exists()
+    assert engine.verify(w.out / 'static/return.zip')['request_attempts'] == 10
+
+
+def test_budget_partial_resume_does_not_change_plan(workflow):
+    w = workflow
+    assert cli.main([*w.args, '--limit', '3']) == 0
+    assert len(w.sent) == 6
+    assert cli.main([*w.args, '--limit', '3']) == 0
+    assert len(w.sent) == 12
+    assert cli.main(w.args) == 0
+    assert len(w.sent) == 30
+    assert engine.verify(w.out / 'video/return.zip')['logical_rows'] == 20
+
+
+def test_static_pilot_failure_stops_before_any_bulk_video_calls(workflow, monkeypatch):
+    w = workflow
+    calls = []
+    def transport(payload, key, config):
+        body = json.loads(payload)
+        parts = body['messages'][0]['content']
+        calls.append(body)
+        if not any(p['type'] == 'video_url' for p in parts):
+            return 401, {}, b'{"error":"static route unavailable"}'
+        answer = 'YES' if parts[-1]['text'] == 'Match the target.' else 'LEFT'
+        return 200, {}, json.dumps(dict(model='served-version', choices=[
+            dict(finish_reason='stop', message=dict(content=answer))])).encode()
+    monkeypatch.setattr(engine, 'transport', transport)
+    assert cli.main(w.args) == 2
+    assert len(calls) == 11  # Ten video pilots, then the failed static pilot; no full batch.
+    attempts = [json.loads(l) for l in (w.out / 'video/attempts.jsonl').read_text().splitlines()]
+    assert len(attempts) == 10 and all(a['phase'] == 'pilot' for a in attempts)
+
+
+def test_concurrency_change_reuses_saved_answers(workflow, monkeypatch):
+    w = workflow
+    monkeypatch.chdir(w.root)
+    args = list(w.args)
+    index = args.index('--out')
+    del args[index:index+2]
+    assert cli.main(['test', *args, '--input', 'static', '--concurrency', '1']) == 0
+    assert cli.main(['test', *args, '--input', 'static', '--concurrency', '4']) == 0
+    assert len(w.sent) == 10
+    assert len(list((w.root / 'outputs').iterdir())) == 1
+
+
+def test_model_resolution_is_exact_and_does_not_substitute(monkeypatch):
+    assert cli.presets.resolve_model('opus', ['a/claude-opus-5-5']) == 'a/claude-opus-5-5'
+    assert cli.presets.resolve_model('qwen', ['q/qwen3.8-max', 'q/qwen3.8-max-0902']) == 'q/qwen3.8-max-0902'
+    with pytest.raises(ValueError, match='not found'):
+        cli.presets.resolve_model('kimi', ['q/kimi-k3.1-pro-highspeed', 'q/kimi-k2.5'])
+    with pytest.raises(ValueError, match='Multiple routes'):
+        cli.presets.resolve_model('astra', ['a/gpt-6-astra', 'b/gpt-6-astra'])
+    with pytest.raises(ValueError, match='does not accept native video'):
+        cli.presets.defaults('opus', 'native')
+
+    requests = []
+    def open_request(request, timeout):
+        requests.append(request)
+        assert request.full_url == 'https://company.example/v1/models'
+        assert request.get_header('Authorization') == 'Bearer private-credential'
+        return BytesIO(json.dumps({'data': [{'id': 'a/gpt-6-astra'}]}).encode())
+    monkeypatch.setattr(cli.presets, 'build_opener', lambda *handlers: SimpleNamespace(open=open_request))
+    assert cli.presets.model_ids('https://company.example/v1', 'private-credential') == ['a/gpt-6-astra']
+    assert len(requests) == 1

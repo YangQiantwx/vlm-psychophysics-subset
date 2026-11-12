@@ -1,10 +1,10 @@
 # Run the API benchmark
 
-**1,480 videos (5.82% of the full set) + 1,346 static requests per model.** Inputs download automatically. Answers are saved as they arrive, and scoring is automatic.
+**1,480 videos + 1,346 distinct static calls per model.** Same frozen subset as the human study: **5.82% of 25,440 videos**.
 
-## 1. Install
+## Install once
 
-Use Python 3.11+ on macOS or Linux.
+Python 3.11+ on macOS or Linux:
 
 ```bash
 git clone https://github.com/YangQiantwx/vlm-psychophysics-subset.git
@@ -12,39 +12,58 @@ cd vlm-psychophysics-subset
 python -m pip install -e .
 ```
 
-## 2. Connect your API
-
-`settings.json` is already set to **NVIDIA Inference Gateway / Astra**. If needed, change `base_url` and `model` to your company's OpenAI-compatible Chat Completions endpoint and model ID.
-
-The command asks for your API key. If you already have a key file, put its path in `api_key_file` in `settings.json` (a text file containing only the key). `NVIDIA_API_KEY` and `--key-file /path/to/key.txt` also work. The key is never saved in results.
-
-## 3. Test, then run everything
+## Choose one model and run
 
 ```bash
-python run.py test
-python run.py
+python run.py opus
 ```
 
-The test makes **20 requests**: one per task, domain and input type. These answers count toward the full run. It stops on API errors before the full batch starts.
+Replace `opus` with **`astra`**, **`kimi`**, **`qwen`**, or **`qwen-flash`**. `opus` means **Claude Opus 5.5**. No code edits needed.
 
-Video uses all **180 original frames** as ordered images; static uses **1–4 images**. The endpoint must accept up to 181 images in one request. For a model with native MP4 support, set `video_delivery` to `native` in `settings.json`. The script never silently drops frames or shrinks images.
+Paste your company API key when prompted, or use `--key-file /path/to/key.txt`. `NVIDIA_API_KEY` also works. NVIDIA Gateway is preset; the script looks up the exact model ID in your account.
 
-**Interrupted? Run the same command again.** Saved answers are not requested again. Keep the same settings and output folder. An ambiguous network failure is preserved for review instead of silently charging for a retry.
+It downloads inputs, checks one pilot per task/domain/input type, then runs everything, saves answers and scores them. Pilots count toward the full run. Repeat the same command to resume; saved answers are not requested again.
 
-## 4. Get the results
+**Send back `submission.zip` and `submission.zip.sha256`** from the output folder printed in the terminal. `scores.csv` and `results.csv` contain the scores and individual answers.
 
-The terminal prints your output folder. Send back **`submission.zip`** and **`submission.zip.sha256`** from that folder.
+<details>
+<summary>Run less, test first, or adjust settings</summary>
 
-- `scores.csv`: video and static accuracy by task and domain, with exact counts.
-- `results.csv`: every answer, prediction, ground truth and status.
-- `submission.zip`: both modes, raw API responses, settings, hashes and scores.
+| What you want | Command |
+|---|---|
+| Test only (up to 20 calls, reused later) | `python run.py test opus` |
+| Video only | `python run.py opus --input video` |
+| Static only | `python run.py opus --input static` |
+| At most 20 new video calls | `python run.py opus --input video --limit 20` |
+| Recheck saved results, no API calls | `python run.py eval --out outputs/YOUR-RUN` |
 
-Recheck and rescore saved results without any API calls:
+`--limit` is a call budget **per selected input type**, including pilots. It leaves the frozen plan intact and reports partial coverage. Repeating it continues the same plan; a limited run is not a new representative subset.
 
-```bash
-python run.py eval --out outputs/YOUR-RUN-FOLDER
-```
+Defaults: **4,096 output tokens** (including reasoning where supported), **one request at a time** after pilots. Change with `--max-tokens` or `--concurrency`. Astra requests medium reasoning; Kimi requests low (the NVIDIA reference default); Opus and Qwen use their server defaults. Sampling fields such as temperature and top-p are left to each provider. Invalid or truncated pilots stop before bulk execution; failures are saved without automatic paid retries.
+
+Optional: `--base-url` for another company endpoint; `--model-id` for an exact route if its model list is unavailable or ambiguous. Opus uses native Messages; if your company serves it through Chat Completions, add `--api-format chat`. Run `python run.py --help` for the complete list. `settings.json` can remember a default model and a key **file path**, never the key itself.
+
+</details>
+
+<details>
+<summary>Model presets and full-frame input</summary>
+
+| Shortcut | Model | Default video delivery | Request format |
+|---|---|---|---|
+| `astra` | GPT-6 Astra | All 180 ordered PNGs | Chat Completions; original image detail |
+| `opus` | Claude Opus 5.5 | All 180 ordered PNGs | Native Anthropic Messages |
+| `kimi` | Kimi K3.1 Pro | All 180 ordered PNGs | Chat Completions |
+| `qwen` | Qwen3.8 Max; prefers snapshot 0902 | All 180 PNGs in a video frame list | Chat Completions; `video` array |
+| `qwen-flash` | Qwen3.8 Flash | All 180 PNGs in a video frame list | Chat Completions; `video` array |
+
+T5 includes the reference image first. Static uses the prescribed 1–4 images. The client verifies source hashes and decoded frame order; it never silently resizes, drops frames or switches models. Frame delivery is recorded separately from the provider's unobserved internal processing. Qwen3.8 frame-list timestamp behavior is not specified by the vendor; source timing (60 fps) is retained in the request text and evidence.
+
+For Qwen, `--video images` explicitly switches to separate image blocks. Kimi and Qwen also offer `--video native` for company routes accepting inline MP4: server sampling is then unknown and this is recorded as a separate comparison. Native video is not automatically treated as all-frame input. Large requests remain subject to the company's payload limits; errors stop the run instead of reducing the input.
+
+Official references checked on 2026-11-11: [Astra](https://developers.openai.com/api/docs/models/gpt-6-astra), [OpenAI vision](https://developers.openai.com/api/docs/guides/images-vision), [Opus 5.5](https://platform.claude.com/docs/en/models/opus-5-5/overview), [Claude vision](https://platform.claude.com/docs/en/build-with-claude/vision), [Kimi NVIDIA API](https://docs.api.nvidia.com/nim/reference/moonshotai-kimi-k3_1-pro-infer), [Qwen](https://www.alibabacloud.com/help/en/model-studio/vision), [Gateway protocols](https://docs.nvidia.com/nvcf/overview/llm-gateway). These establish request formats; the initial pilot checks your account's actual route.
+
+</details>
 
 <a id="regenerate-a-stimulus"></a>
 
-[Dataset](https://huggingface.co/datasets/DrQY/vlm-psychophysics-subset) · [Study archive: design, audits and rebuild instructions](https://github.com/YangQiantwx/vlm-psychophysics-subset/tree/54b5b2a4ffda71317fc9f3500d524d1c53f8e52e)
+[Dataset](https://huggingface.co/datasets/DrQY/vlm-psychophysics-subset) · [Study archive](https://github.com/YangQiantwx/vlm-psychophysics-subset/tree/54b5b2a4ffda71317fc9f3500d524d1c53f8e52e)

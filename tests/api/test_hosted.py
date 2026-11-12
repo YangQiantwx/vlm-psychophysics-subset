@@ -471,6 +471,8 @@ def test_all_frame_batch_requires_server_evidence(tmp_path, monkeypatch):
     ('astra', 'gpt-6-astra', 'OPENAI_API_KEY'),
     ('claude', 'claude-opus-5-5', 'ANTHROPIC_API_KEY'),
     ('nvidia-internal', 'openai/openai/gpt-6-astra', 'NVIDIA_API_KEY'),
+    ('nvidia-qwen', 'company/qwen3.8-max-0902', 'NVIDIA_API_KEY'),
+    ('nvidia-opus', 'company/claude-opus-5-5', 'NVIDIA_API_KEY'),
 ])
 def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider, model, key_env):
     import numpy as np
@@ -517,16 +519,20 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
             ]}],
         })
         options = ['--reasoning-effort', 'xhigh']
-    elif provider == 'claude':
+    elif provider in {'claude', 'nvidia-opus'}:
         raw = release.encoded({
             'id': 'fixture-id', 'model': model, 'stop_reason': 'end_turn',
             'content': [{'type': 'thinking', 'thinking': 'Hidden reasoning'},
                         {'type': 'text', 'text': ' YES! '}],
         })
-        options = []
+        options = [] if provider == 'claude' else [
+            '--video-delivery', 'ordered-images', '--api-format', 'messages', '--token-field', 'max_tokens']
     elif provider == 'qwen-frames':
         raw = _response(' YES! ')
         options = ['--temperature', '0', '--seed', '0', '--disable-thinking']
+    elif provider == 'nvidia-qwen':
+        raw = _response(' YES! ')
+        options = ['--video-delivery', 'video-frames', '--token-field', 'max_tokens']
     else:
         raw = _response(' YES! ')
         options = ['--video-delivery', 'ordered-images', '--image-detail', 'high',
@@ -560,10 +566,10 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
         args = ['api', 'evaluate', '--data-root', str(tmp_path), '--task', 't5-natural',
                 '--sample-id', sample_id, '--model', model,
                 '--out', str(out), '--max-requests', '1', '--execute', *options]
-        if provider in {'qwen-frames', 'nvidia-internal'}:
-            args += ['--provider', provider]
+        if provider == 'qwen-frames' or provider.startswith('nvidia-'):
+            args += ['--provider', 'nvidia-internal' if provider.startswith('nvidia-') else provider]
         try:
-            if provider == 'nvidia-internal':
+            if provider.startswith('nvidia-'):
                 main(args)
                 receipt, = runner.load_rows((out / 'attempts.jsonl').read_bytes())
                 main(args)
@@ -593,16 +599,23 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
     body = json.loads(data)
     config = json.loads((out / 'config.json').read_bytes())
     assert config['dataset_revision'] == release.REVISION
-    if provider == 'qwen-frames':
+    if provider in {'qwen-frames', 'nvidia-qwen'}:
         assert path == '/v1/chat/completions'
         reference, sequence, question = body['messages'][0]['content']
         assert reference['type'] == 'image_url' and sequence['type'] == 'video'
-        assert question == {'type': 'text', 'text': prompt}
-        assert 'video_prompt_prefix' not in config and 'request_prompt_sha256' not in receipt
+        if provider == 'qwen-frames':
+            assert question == {'type': 'text', 'text': prompt}
+            assert 'video_prompt_prefix' not in config and 'request_prompt_sha256' not in receipt
+            assert config['video_fps'] is None and config['frame_settings']['requested_fps'] is None
+            assert config['generation_parameters'] == {'temperature': 0, 'seed': 0, 'enable_thinking': False}
+            assert all(body[k] == v for k, v in config['generation_parameters'].items())
+        else:
+            assert question == {'type': 'text', 'text': config['video_prompt_prefix'] + prompt}
+            assert config['video_delivery_settings']['delivery'] == 'video_frame_list'
+            assert sequence['min_pixels'] == sequence['max_pixels'] == 768 * 512
+            assert sequence['total_pixels'] == 180 * 768 * 512
+            assert body['max_tokens'] == 4096 and 'max_completion_tokens' not in body
         assert 'fps' not in sequence
-        assert config['video_fps'] is None and config['frame_settings']['requested_fps'] is None
-        assert all(body[k] == v for k, v in config['generation_parameters'].items())
-        assert config['generation_parameters'] == {'temperature': 0, 'seed': 0, 'enable_thinking': False}
         images = [reference['image_url']['url'], *sequence['video']]
     else:
         prefix = 'The video is provided as 180 consecutive frames in chronological order at 60 fps.\n\n'
@@ -620,9 +633,13 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
             assert body['tools'] == [] and body['truncation'] == 'disabled'
             assert 'temperature' not in body and 'seed' not in body
             images = [p['image_url'] for p in sequence]
-        elif provider == 'claude':
+        elif provider in {'claude', 'nvidia-opus'}:
             assert path == '/v1/messages'
-            assert headers['anthropic-version'] == config['api_version'] == '2026-10-21'
+            if provider == 'claude':
+                assert headers['anthropic-version'] == config['api_version'] == '2026-10-21'
+            else:
+                assert headers['anthropic-version'] == config['anthropic_api_version'] == '2023-06-01'
+                assert config['api_format'] == 'messages'
             assert set(body) == {'model', 'max_tokens', 'messages', 'stream'}
             *sequence, question = body['messages'][0]['content']
             assert question == {'type': 'text', 'text': prefix + prompt}
