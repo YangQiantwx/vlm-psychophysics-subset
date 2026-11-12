@@ -526,13 +526,14 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
                         {'type': 'text', 'text': ' YES! '}],
         })
         options = [] if provider == 'claude' else [
-            '--video-delivery', 'ordered-images', '--api-format', 'messages', '--token-field', 'max_tokens']
+            '--video-delivery', 'ordered-images', '--api-format', 'messages', '--token-field', 'max_tokens',
+            '--reasoning-effort', 'low']
     elif provider == 'qwen-frames':
         raw = _response(' YES! ')
         options = ['--temperature', '0', '--seed', '0', '--disable-thinking']
     elif provider == 'nvidia-qwen':
         raw = _response(' YES! ')
-        options = ['--video-delivery', 'video-frames', '--token-field', 'max_tokens']
+        options = ['--video-delivery', 'video-frames', '--token-field', 'max_tokens', '--disable-thinking']
     else:
         raw = _response(' YES! ')
         options = ['--video-delivery', 'ordered-images', '--image-detail', 'high',
@@ -611,6 +612,8 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
             assert all(body[k] == v for k, v in config['generation_parameters'].items())
         else:
             assert question == {'type': 'text', 'text': config['video_prompt_prefix'] + prompt}
+            assert body['enable_thinking'] is False
+            assert config['generation_parameters'] == {'enable_thinking': False}
             assert config['video_delivery_settings']['delivery'] == 'video_frame_list'
             assert sequence['min_pixels'] == sequence['max_pixels'] == 768 * 512
             assert sequence['total_pixels'] == 180 * 768 * 512
@@ -640,7 +643,10 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
             else:
                 assert headers['anthropic-version'] == config['anthropic_api_version'] == '2023-06-01'
                 assert config['api_format'] == 'messages'
-            assert set(body) == {'model', 'max_tokens', 'messages', 'stream'}
+                assert body['output_config'] == {'effort': 'low'}
+                assert config['generation_parameters'] == {'output_config': {'effort': 'low'}}
+            assert set(body) == {'model', 'max_tokens', 'messages', 'stream'} | (
+                {'output_config'} if provider == 'nvidia-opus' else set())
             *sequence, question = body['messages'][0]['content']
             assert question == {'type': 'text', 'text': prefix + prompt}
             assert all(

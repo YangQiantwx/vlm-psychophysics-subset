@@ -216,7 +216,14 @@ def configured(
     )
     if api_format == "messages":
         release.require(provider == PROVIDER and video_delivery in (None, "ordered-images"), "Messages uses ordered images")
-        release.require(not generation_parameters and image_detail is None, "Messages uses native provider defaults; omit Chat-only parameters")
+        native_generation = generation_parameters or {}
+        release.require(set(native_generation) <= {'output_config'} and image_detail is None,
+                        "Messages requires native parameters; omit Chat-only parameters")
+        if native_generation:
+            effort = native_generation['output_config']
+            release.require(isinstance(effort, dict) and set(effort) == {'effort'}
+                            and effort['effort'] in {'low', 'medium', 'high', 'xhigh', 'max'},
+                            "Invalid Messages effort")
         release.require(token_field in (None, "max_tokens"), "Messages uses max_tokens")
         token_field = "max_tokens"
         config.update(api_format="messages", anthropic_api_version="2023-06-01")
@@ -1659,8 +1666,8 @@ def main(argv=None):
     if args.temperature is not None or args.seed is not None or args.disable_thinking:
         if args.provider not in {PROVIDER, "vllm", "qwen", "qwen-frames"}:
             parser.error("These generation settings require NVIDIA Gateway, vllm or Qwen")
-        if args.provider == PROVIDER and args.disable_thinking:
-            parser.error("--disable-thinking requires vllm or Qwen")
+        if args.provider == PROVIDER and args.disable_thinking and args.api_format == 'messages':
+            parser.error("Messages does not support enable_thinking")
         if args.temperature is not None:
             if not 0 <= args.temperature < 2:
                 parser.error("--temperature must be in [0, 2)")
@@ -1676,7 +1683,10 @@ def main(argv=None):
                 generation["enable_thinking"] = False
     if args.reasoning_effort or args.reasoning_mode:
         if args.provider == PROVIDER and args.reasoning_effort and not (args.preset or args.reasoning_mode):
-            generation["reasoning_effort"] = args.reasoning_effort
+            if args.api_format == 'messages':
+                generation['output_config'] = {'effort': args.reasoning_effort}
+            else:
+                generation["reasoning_effort"] = args.reasoning_effort
         elif args.provider == "astra":
             generation["reasoning"] = {"effort": args.reasoning_effort or "medium"}
             if args.reasoning_mode:

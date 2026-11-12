@@ -168,16 +168,21 @@ def test_model_shortcut_uses_vendor_fields_and_company_route(workflow, monkeypat
         assert 'temperature' not in body and 'top_p' not in body
         if name == 'opus':
             assert config['api_format'] == 'messages'
+            assert body['output_config'] == {'effort': 'low'}
+            assert config['generation_parameters'] == {'output_config': {'effort': 'low'}}
+            assert 'reasoning_effort' not in body
             assert all(p['type'] == 'image' and p['source']['type'] == 'base64' for p in parts[:-1])
             response = dict(id='fixture', model='served-version', stop_reason='end_turn',
                             content=[dict(type='text', text=answer)])
         else:
             assert all(p['type'] == 'image_url' for p in parts[:-1])
             if name == 'astra':
-                assert body['reasoning_effort'] == 'medium'
+                assert body['reasoning_effort'] == 'low'
                 assert all(p['image_url']['detail'] == 'original' for p in parts[:-1])
             elif name == 'kimi': assert body['reasoning_effort'] == 'low'
-            else: assert 'reasoning_effort' not in body
+            else:
+                assert 'reasoning_effort' not in body and body['enable_thinking'] is False
+                assert config['generation_parameters'] == {'enable_thinking': False}
             response = dict(id='fixture', model='served-version',
                             choices=[dict(finish_reason='stop', message=dict(content=answer))])
         return 200, {}, json.dumps(response).encode()
@@ -249,3 +254,65 @@ def test_model_resolution_is_exact_and_does_not_substitute(monkeypatch):
     monkeypatch.setattr(cli.presets, 'build_opener', lambda *handlers: SimpleNamespace(open=open_request))
     assert cli.presets.model_ids('https://company.example/v1', 'private-credential') == ['a/gpt-6-astra']
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize('name', ['astra', 'opus', 'kimi', 'qwen', 'qwen-flash'])
+def test_settings_preview_never_downloads_or_calls_api(workflow, monkeypatch, capsys, name):
+    w = workflow
+    monkeypatch.setattr(cli, 'credential', lambda *_: pytest.fail('Preview requested credentials'))
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: pytest.fail('Preview called models API'))
+    monkeypatch.setattr(catalog, 'public_plan', lambda *_: pytest.fail('Preview downloaded inputs'))
+    assert cli.main(['settings', name, *w.args, '--max-tokens', '2048', '--concurrency', '3']) == 0
+    settings = json.loads(capsys.readouterr().out)
+    preset = cli.presets.PRESETS[name]
+    assert settings['api_calls'] == 0 and settings['max_tokens'] == 2048
+    assert settings['concurrency'] == 3 and settings['video_delivery'] == preset['delivery']
+    assert settings['api_format'] == preset.get('api_format', 'chat')
+    assert settings['reasoning_effort'] == preset['reasoning']
+    if name == 'opus': assert settings['request_fields']['output_config'] == {'effort': 'low'}
+    elif name.startswith('qwen'): assert settings['request_fields']['enable_thinking'] is False
+    else: assert settings['request_fields']['reasoning_effort'] == 'low'
+    assert settings['request_fields'][preset['token_field']] == 2048
+    assert settings['video_source']['frames'] == 180 and settings['video_source']['t5_reference_first']
+    assert 'temperature' in settings['omitted_fields'] and 'temperature' not in settings['request_fields']
+    assert not w.out.exists() and not w.sent
+
+
+def test_unknown_settings_are_rejected_before_spending(workflow, monkeypatch, capsys):
+    w = workflow
+    settings = json.loads(w.settings.read_text())
+    settings['temperature'] = 0
+    w.settings.write_text(json.dumps(settings))
+    monkeypatch.setattr(cli, 'credential', lambda *_: pytest.fail('Invalid settings requested credentials'))
+    assert cli.main(w.args) == 2
+    assert 'Unsupported settings.json fields' in capsys.readouterr().err
+    assert not w.sent
+
+
+def test_settings_file_reasoning_is_checked_like_cli(workflow, capsys):
+    w = workflow
+    w.settings.write_text(json.dumps(dict(model='qwen', reasoning_effort='medium')))
+    assert cli.main(['settings', *w.args]) == 2
+    assert 'does not expose that reasoning effort' in capsys.readouterr().err
+    assert not w.sent
+
+
+@pytest.mark.parametrize('name', ['opus', 'qwen'])
+def test_minimum_thinking_rejection_never_falls_back(workflow, monkeypatch, name):
+    w = workflow
+    model = 'company/' + cli.presets.PRESETS[name]['ids'][0]
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: [model])
+    requests = []
+    def reject(payload, key, config):
+        body = json.loads(payload)
+        requests.append(body)
+        if name == 'opus': assert body['output_config'] == {'effort': 'low'}
+        else: assert body['enable_thinking'] is False
+        return 400, {}, b'{"error":"unsupported thinking parameter"}'
+    monkeypatch.setattr(engine, 'transport', reject)
+    args = [name, *w.args, '--input', 'static']
+    assert cli.main(args) == 2
+    assert cli.main(args) == 2
+    assert len(requests) == 1
+    attempt = json.loads((w.out / 'static/attempts.jsonl').read_text())
+    assert attempt['status'] == 'HTTP_ERROR'

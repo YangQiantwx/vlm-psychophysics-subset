@@ -20,20 +20,20 @@ ROUTES = {
 # Prefer a documented snapshot, then an exact alias; never pick another model.
 PRESETS = {
     'astra': dict(ids=('gpt-6-astra',), delivery='ordered-images', token_field='max_completion_tokens',
-                  detail='original', reasoning='medium', native=False,
+                  detail='original', reasoning='low', native=False,
                   reference='https://developers.openai.com/api/docs/models/gpt-6-astra'),
     'opus': dict(ids=('claude-opus-5-5', 'claude-opus-5.5'), delivery='ordered-images',
-                 token_field='max_tokens', detail=None, reasoning=None, native=False,
+                 token_field='max_tokens', detail=None, reasoning='low', native=False,
                  api_format='messages',
                  reference='https://platform.claude.com/docs/en/models/opus-5-5/overview'),
     'kimi': dict(ids=('kimi-k3.1-pro',), delivery='ordered-images', token_field='max_tokens',
                  detail=None, reasoning='low', native=True,
                  reference='https://docs.api.nvidia.com/nim/reference/moonshotai-kimi-k3_1-pro-infer'),
     'qwen': dict(ids=('qwen3.8-max-0902', 'qwen3.8-max-2026-09-02', 'qwen3.8-max'),
-                 delivery='video-frames', token_field='max_tokens', detail=None, reasoning=None, native=True,
+                 delivery='video-frames', token_field='max_tokens', detail=None, reasoning=None, native=True, enable_thinking=False,
                  reference='https://www.alibabacloud.com/help/en/model-studio/vision'),
     'qwen-flash': dict(ids=('qwen3.8-flash',), delivery='video-frames', token_field='max_tokens',
-                       detail=None, reasoning=None, native=True,
+                       detail=None, reasoning=None, native=True, enable_thinking=False,
                        reference='https://www.alibabacloud.com/help/en/model-studio/vision'),
 }
 ALIASES = {'astral': 'astra', 'gpt-6-astra': 'astra', 'opus5.5': 'opus', 'opus-5.5': 'opus', 'claude-opus-5-5': 'opus',
@@ -85,6 +85,7 @@ def defaults(name, video=None):
         delivery = 'ordered-images'
     return dict(video_delivery=delivery, token_field=preset['token_field'], image_detail=preset['detail'],
                 reasoning_effort=preset['reasoning'], api_format=preset.get('api_format', 'chat'),
+                enable_thinking=preset.get('enable_thinking'),
                 max_tokens=4096, concurrency=1)
 
 
@@ -101,5 +102,8 @@ def messages_body(body):
                                 transformations={'oversized_image': 'error'}))
         else:
             raise ValueError('Native Messages requires ordered images, not a video file.')
-    return dict(model=body['model'], messages=[dict(role='user', content=content)],
-                max_tokens=body.get('max_tokens', body.get('max_completion_tokens')), stream=False)
+    result = dict(model=body['model'], messages=[dict(role='user', content=content)],
+                  max_tokens=body.get('max_tokens', body.get('max_completion_tokens')), stream=False)
+    if 'output_config' in body:
+        result['output_config'] = body['output_config']
+    return result

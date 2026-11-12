@@ -121,7 +121,7 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ['api']:
         return engine.main(argv[1:])
-    commands = ('run', 'test', 'eval', 'plan', 'models')
+    commands = ('run', 'test', 'eval', 'plan', 'models', 'settings')
     if argv and not argv[0].startswith('-') and argv[0] not in commands:
         argv.insert(0, 'run')
     parser = argparse.ArgumentParser(description='Choose a model and run the frozen benchmark. No code edits needed.')
@@ -153,6 +153,11 @@ def main(argv=None):
         settings = json.loads(args.settings.read_text()) if args.settings.exists() else {}
         if not args.settings.exists() and args.settings != Path('settings.json'):
             raise ValueError(f'Settings file not found: {args.settings}')
+        known = {'model', 'api_key_file', 'base_url', 'video_delivery', 'max_tokens', 'concurrency',
+                 'token_field', 'image_detail', 'reasoning_effort', 'api_format', 'enable_thinking'}
+        unknown = settings.keys() - known
+        if unknown:
+            raise ValueError('Unsupported settings.json fields (not applied): ' + ', '.join(sorted(unknown)))
         name = presets.preset_name(args.model or settings.get('model', 'astra'))
         preset = presets.PRESETS.get(name)
         if args.model and preset is None:
@@ -168,27 +173,67 @@ def main(argv=None):
         endpoint = engine.native_video_api.vllm_endpoint(args.base_url or settings.get('base_url', engine.BASE_URL))
         delivery = options.get('video_delivery', 'ordered-images')
         if delivery not in engine.GATEWAY_VIDEO_DELIVERIES: raise ValueError('Unknown video delivery.')
-        if args.reasoning_effort:
-            allowed = {'astra': {'low','medium','high','xhigh','max'}, 'kimi': {'low','medium','high','max'}}
-            if args.reasoning_effort not in allowed.get(name, set()):
-                raise ValueError('This preset does not expose that reasoning field through Chat Completions.')
+        if preset and options.get('reasoning_effort'):
+            allowed = {'astra': {'low','medium','high','xhigh','max'}, 'kimi': {'low','medium','high','max'},
+                       'opus': {'low','medium','high','xhigh','max'}}
+            if options['reasoning_effort'] not in allowed.get(name, set()):
+                raise ValueError('This preset does not expose that reasoning effort.')
+        thinking = options.get('enable_thinking')
+        if thinking is not None and (thinking is not False or (preset and name not in ('qwen', 'qwen-flash'))):
+            raise ValueError('enable_thinking=false is supported only for the Qwen presets.')
+        if options.get('api_format') == 'messages' and (
+            delivery != 'ordered-images' or thinking is not None or options.get('image_detail')
+            or options.get('token_field') != 'max_tokens'
+        ):
+            raise ValueError('Messages requires ordered images, max_tokens and native effort settings.')
         tokens, workers = int(options.get('max_tokens', 4096)), int(options.get('concurrency', 1))
         if tokens <= 0 or not 1 <= workers <= 16: raise ValueError('Use positive max-tokens and concurrency 1–16.')
         modes = ('video', 'static') if args.input == 'both' else (args.input,)
-        key = credential(settings, args.key_file) if args.command not in ('plan', 'eval') else None
+        key = credential(settings, args.key_file) if args.command not in ('plan', 'eval', 'settings') else None
         model = args.model_id or (presets.resolve_model(name, presets.model_ids(endpoint, key))
                                   if preset and key else preset['ids'][0] if preset else settings['model'])
         if not re.fullmatch(r'[A-Za-z0-9_.:/-]+', model): raise ValueError('Invalid exact model ID.')
         run_settings = dict(base_url=endpoint, model=model, video_delivery=delivery, max_tokens=tokens,
                             concurrency=workers, token_field=options.get('token_field', 'max_completion_tokens'),
                             image_detail=options.get('image_detail'), reasoning_effort=options.get('reasoning_effort'),
+                            enable_thinking=thinking, protocol_profile='minimum-thinking-v1' if preset
+                            and options.get('reasoning_effort') == preset['reasoning']
+                            and thinking == preset.get('enable_thinking') else 'custom',
                             api_format=options.get('api_format', 'chat'),
                             dataset_revision=release.REVISION)
+        if args.command == 'settings':
+            fields = {'model': model, 'stream': False, run_settings['token_field']: tokens}
+            if run_settings['reasoning_effort']:
+                if run_settings['api_format'] == 'messages':
+                    fields['output_config'] = {'effort': run_settings['reasoning_effort']}
+                else:
+                    fields['reasoning_effort'] = run_settings['reasoning_effort']
+            if thinking is not None:
+                fields['enable_thinking'] = thinking
+            print(json.dumps(dict(
+                preset=name if preset else None, **run_settings, input_types=modes,
+                request_fields=fields,
+                model_route_status='not checked; resolved from account /models when running',
+                video_source=dict(frames=180, fps=60, width=768, height=512,
+                                  client_resize=False, client_crop=False, t5_reference_first=True),
+                prompt_policy='frozen task prompt; frame delivery adds the 180-frame/60 fps prefix; no history or examples',
+                omitted_fields=[f for f in ['temperature', 'top_p', 'seed', 'thinking', 'enable_thinking',
+                                           'thinking_budget', 'output_config', 'tools', 'response_format'] if f not in fields],
+                omitted_field_policy='provider defaults; effective server values are not observed',
+                warning='The API output limit is not a verified common total reasoning budget',
+                api_calls=0,
+            ), indent=2))
+            return 0
         scientific_settings = {k: v for k, v in run_settings.items() if k != 'concurrency'}
         identity = hashlib.sha256(json.dumps(scientific_settings, sort_keys=True).encode()).hexdigest()[:10]
         out = args.out or Path('outputs') / (re.sub(r'[^A-Za-z0-9_.-]', '-', model) + '-' + identity)
         if args.command == 'eval': return 0 if evaluation(out) else 2
         print(f'Model: {model}\nAPI: {endpoint}\nVideo: {delivery}\nOutput cap: {tokens}\nResults: {out}')
+        print(f"Protocol: {run_settings['api_format']}; token field: {run_settings['token_field']}; "
+              f"reasoning: {run_settings['reasoning_effort'] or 'provider default'}; "
+              f"thinking switch: {thinking if thinking is not None else 'not sent'}; "
+              f"image detail: {run_settings['image_detail'] or 'provider default'}; concurrency: {workers}.")
+        print('Temperature / top-p / seed / thinking budget: not sent (provider defaults).')
         print(f"Inputs: {', '.join(modes)}. Full plan: 1,480 video + 1,346 distinct static calls.")
         if delivery == 'native' and 'video' in modes:
             print('Native video: the server chooses frames; this run is separate from the 180-frame comparison.')
@@ -219,6 +264,7 @@ def main(argv=None):
                 if mode == 'video': common += ['--video-delivery', delivery]
                 if run_settings['image_detail']: common += ['--image-detail', run_settings['image_detail']]
                 if run_settings['reasoning_effort']: common += ['--reasoning-effort', run_settings['reasoning_effort']]
+                if thinking is False: common += ['--disable-thinking']
                 _, plan = invoke(['plan', *common], mode)
                 if args.command == 'plan':
                     print(f"{mode}: {plan['unique_requests']} calls. No API requests sent.")
