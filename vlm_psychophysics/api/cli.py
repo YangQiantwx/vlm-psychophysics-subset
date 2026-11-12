@@ -183,7 +183,7 @@ def configured(
         "Set --model to the exact provider model ID",
     )
     hosted = native_video_api.HOSTED.get(provider)
-    endpoint = BASE_URL
+    endpoint = native_video_api.vllm_endpoint(os.environ.get("VLM_API_BASE_URL", BASE_URL))
     if hosted:
         endpoint = native_video_api.endpoint(provider)
     elif provider == "vllm":
@@ -1233,9 +1233,10 @@ def verify(archive, *, with_history=False):
                 native_video_api.vllm_endpoint(config["endpoint"])
             else:
                 release.require(
-                    provider == PROVIDER and config["endpoint"] == BASE_URL,
+                    provider == PROVIDER,
                     "Run configuration differs from provider",
                 )
+                native_video_api.vllm_endpoint(config["endpoint"])
             gateway_frames = config.get("video_delivery") == "ordered-images"
             if "video_delivery" in config:
                 release.require(
@@ -1769,7 +1770,11 @@ def command(args):
     pilot = execution(args.out, plan, rows, args, pilot=True)
     args.max_requests -= pilot["started"]
     run = None
-    if args.max_requests > 0 and not pilot.get("stop_reason"):
+    pilot_failed = any(pilot.get("statuses", {}).get(s, 0) for s in (
+        "SOURCE_ERROR", "HTTP_ERROR", "TRANSPORT_UNKNOWN", "RESPONSE_ENVELOPE_ERROR",
+        "MODEL_ID_CHANGED", "SENSITIVE_RESPONSE_WITHHELD",
+    ))
+    if args.max_requests > 0 and not pilot.get("stop_reason") and not pilot_failed:
         run = execution(args.out, plan, rows, args, pilot=False)
     packaged = export(args.out, archive)
     with closing(open_db(args.out)) as db:

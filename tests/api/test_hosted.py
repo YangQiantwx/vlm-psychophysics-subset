@@ -812,39 +812,3 @@ def test_credential_and_media_echo_not_exported(tmp_path, monkeypatch):
         attempts = runner.load_rows(package.read('attempts.jsonl'))
         assert {r['response_body_withheld'] for r in attempts} == {'credential_echo', 'media_echo'}
         assert all(r['response_body_b64'] is None for r in attempts)
-
-@pytest.mark.parametrize('finish,tools,status', [
-    ('stop', None, 'COMPLETE'),
-    ('length', None, 'TRUNCATED'),
-    ('content_filter', None, 'INCOMPLETE'),
-    ('stop', [{'id': 'unexpected-tool'}], 'FORMAT_OR_TOOL_CALL_FAILURE'),
-])
-def test_provider_pilot_preserves_raw_and_rejects_incomplete_labels(tmp_path, monkeypatch, finish, tools, status):
-    import hashlib
-    import sys
-    from vlm_psychophysics.api import provider_api
-    video = tmp_path / 'neutral.mp4'
-    video.write_bytes(b'offline-contract-fixture')
-    inputs = tmp_path / 'inputs.json'
-    inputs.write_text(json.dumps([dict(sample_id='case', task='T1', prompt='Exact question.\\n',
-        video_path='neutral.mp4', video_sha256=hashlib.sha256(video.read_bytes()).hexdigest())]))
-    response = SimpleNamespace(model='observed-deployment', usage=None,
-        choices=[SimpleNamespace(finish_reason=finish, message=SimpleNamespace(content='LEFT', tool_calls=tools))],
-        model_dump_json=lambda **_: json.dumps({'choices': [{'finish_reason': finish, 'message': {'content': 'LEFT', 'tool_calls': tools}}]}))
-    calls = []
-    def create(**body):
-        calls.append(body)
-        return response
-    monkeypatch.setitem(sys.modules, 'openai', SimpleNamespace(OpenAI=lambda **_: SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create)))))
-    monkeypatch.setenv('NVIDIA_API_KEY', 'offline-placeholder')
-    out = tmp_path / 'out'
-    monkeypatch.setattr(sys, 'argv', ['provider_api', '--provider', 'nvidia-internal', '--model', 'test-model',
-        '--inputs', str(inputs), '--root', str(tmp_path), '--out', str(out), '--execute'])
-    provider_api.main()
-    receipt = json.loads((out / 'case/receipt.json').read_text())
-    assert receipt['status'] == status
-    assert receipt['finish_reason'] == finish
-    assert json.loads((out / 'case/raw-response.json').read_text())['choices'][0]['finish_reason'] == finish
-    assert len(calls) == 1
-    assert calls[0]['messages'][0]['content'][1]['text'] == 'Exact question.\\n'

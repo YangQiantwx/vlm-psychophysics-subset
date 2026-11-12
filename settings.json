@@ -1,0 +1,8 @@
+{
+  "base_url": "https://inference-api.nvidia.com/v1",
+  "model": "openai/openai/gpt-6-astra",
+  "api_key_file": "",
+  "video_delivery": "ordered-images",
+  "max_tokens": 512,
+  "concurrency": 1
+}

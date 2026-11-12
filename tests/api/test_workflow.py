@@ -1,0 +1,151 @@
+"""Exercise the public two-command workflow through saved plans and HTTP requests."""
+from io import BytesIO
+import csv
+import json
+import os
+from types import SimpleNamespace
+from zipfile import ZipFile
+
+import pytest
+
+from vlm_psychophysics import catalog, cli
+from vlm_psychophysics.api import cli as engine
+
+
+@pytest.fixture
+def workflow(tmp_path, monkeypatch):
+    rows = []
+    for scope in catalog.SCOPES:
+        domain, task = scope.split('/')
+        truth = 'YES' if task == 't5' else 'LEFT'
+        images = []
+        count = {'t1': 4, 't2': 1, 't3': 1, 't4': 2, 't5': 2}[task]
+        for frame in range(count):
+            name = f'{scope}/static-{frame}.png'
+            path = tmp_path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = f'{scope} still {frame}'.encode()
+            path.write_bytes(data)
+            images.append(dict(path=name, sha256=catalog.sha(data), frame_index=frame))
+        for index in range(2):
+            sid = f'{task}-{index}'
+            name = f'{scope}/{sid}.mp4'
+            data = f'{scope} video {index}'.encode()
+            (tmp_path / name).write_bytes(data)
+            video = dict(sample_id=sid, domain=domain, task=task.upper(), truth=truth,
+                         prompt='Match the target.' if task == 't5' else 'Which side?',
+                         parameters={'strength': .5, 'mask': 'none'}, video_path=name,
+                         video_sha256=catalog.sha(data), frames=180, fps=60, width=768, height=512)
+            if task == 't5':
+                video.update(reference_path=images[0]['path'], reference_sha256=images[0]['sha256'])
+            static = dict(sample_id=sid, truth=truth, video_path=name, video_sha256=video['video_sha256'],
+                          static_case_id='shared-case', model_input_sha256=catalog.sha(catalog.encoded(images)),
+                          frame_indices=[1], choices=['YES', 'NO'] if task == 't5' else ['LEFT', 'RIGHT'],
+                          prompt=video['prompt'], images=images)
+            rows.extend((catalog.trial(scope, video, 'fixture', 'manifest-sha'),
+                         catalog.trial(scope, video, 'fixture', 'manifest-sha', static)))
+    monkeypatch.setattr(catalog, 'public_plan', lambda root, scopes, mode, **_: [
+        row for row in rows if (scopes is None or row['scope'] in scopes) and row['input'] == mode
+    ])
+    monkeypatch.delenv('NVIDIA_API_KEY', raising=False)
+    monkeypatch.delenv('API_KEY', raising=False)
+    monkeypatch.delenv('VLM_API_BASE_URL', raising=False)
+    settings = tmp_path / 'settings.json'
+    settings.write_text(json.dumps(dict(base_url='https://company.example/v1', model='company/model',
+                                       video_delivery='native', max_tokens=512, concurrency=1)))
+    key = tmp_path / 'private-key.txt'
+    key.write_text('private-test-credential\n')
+    sent = []
+
+    def open_request(request, timeout):
+        assert request.full_url == 'https://company.example/v1/chat/completions'
+        assert request.get_header('Authorization') == 'Bearer private-test-credential'
+        body = json.loads(request.data)
+        assert set(body) == {'model', 'stream', 'max_completion_tokens', 'messages'}
+        assert b'private-test-credential' not in request.data
+        sent.append(body)
+        answer = 'YES' if body['messages'][0]['content'][-1]['text'] == 'Match the target.' else 'LEFT'
+        response = BytesIO(json.dumps(dict(model='served-model-version', id=f'response-{len(sent)}',
+            choices=[dict(finish_reason='stop', message=dict(content=answer))],
+            usage=dict(prompt_tokens=100, completion_tokens=1))).encode())
+        response.status, response.headers = 200, {}
+        return response
+
+    monkeypatch.setattr(engine, 'build_opener', lambda *handlers: SimpleNamespace(open=open_request))
+    out = tmp_path / 'output'
+    args = ['--settings', str(settings), '--key-file', str(key), '--out', str(out), '--data-root', str(tmp_path)]
+    return SimpleNamespace(args=args, sent=sent, out=out, root=tmp_path, settings=settings)
+
+
+def test_key_file_test_full_resume_and_offline_evaluation(workflow, monkeypatch):
+    w = workflow
+    assert cli.main(['test', *w.args]) == 0
+    assert len(w.sent) == 20
+    assert 'NVIDIA_API_KEY' not in os.environ and 'VLM_API_BASE_URL' not in os.environ
+    assert cli.main(['test', *w.args]) == 0
+    assert len(w.sent) == 20
+    assert cli.main(w.args) == 0
+    assert len(w.sent) == 30  # 20 video calls + 10 distinct static calls, 40 linked rows.
+    assert cli.main(w.args) == 0
+    assert len(w.sent) == 30
+    assert engine.verify(w.out / 'video/return.zip')['request_attempts'] == 20
+    assert engine.verify(w.out / 'static/return.zip')['request_attempts'] == 10
+    monkeypatch.setattr(engine, 'transport', lambda *_: pytest.fail('Offline evaluation called the API'))
+    monkeypatch.setattr(cli.getpass, 'getpass', lambda *_: pytest.fail('Offline evaluation asked for a key'))
+    w.settings.unlink()
+    assert cli.main(['eval', '--out', str(w.out)]) == 0
+    with (w.out / 'scores.csv').open() as f:
+        scores = list(csv.DictReader(f))
+    assert len(scores) == 20
+    assert all(row['score_pct_over_planned'] == '100.0' and row['missing'] == '0' for row in scores)
+    with (w.out / 'results.csv').open() as f:
+        assert len(list(csv.DictReader(f))) == 40
+    with ZipFile(w.out / 'submission.zip') as bundle:
+        assert set(bundle.namelist()) == {'scores.csv', 'results.csv', 'video/return.zip',
+            'video/return.zip.sha256', 'static/return.zip', 'static/return.zip.sha256'}
+    for path in w.out.rglob('*'):
+        if path.is_file():
+            assert b'private-test-credential' not in path.read_bytes()
+
+
+def test_partial_pilot_resumes_without_extra_calls(workflow):
+    w = workflow
+    settings = json.loads(w.settings.read_text())
+    os.environ['NVIDIA_API_KEY'] = 'private-test-credential'
+    os.environ['VLM_API_BASE_URL'] = settings['base_url']
+    folder = w.out / 'video'
+    common = ['--provider', 'nvidia', '--model', settings['model'], '--input', 'video',
+              '--data-root', str(w.root), '--out', str(folder), '--max-tokens', '512', '--video-delivery', 'native']
+    cli.invoke(['plan', *common], 'video')
+    cli.invoke(['pilot', *common, '--max-requests', '3', '--execute'], 'video')
+    assert len(w.sent) == 3  # No export yet: recovery must use the saved database.
+    assert cli.main(['eval', '--out', str(w.out)]) == 2
+    assert engine.verify(folder / 'return.zip')['request_attempts'] == 3
+    assert cli.main(['test', *w.args]) == 0
+    assert len(w.sent) == 20
+
+
+def test_api_failure_does_not_start_full_batch(workflow, monkeypatch):
+    w = workflow
+    calls = []
+    def fail(*args):
+        calls.append(args)
+        return 401, {}, b'{"error":"invalid credential"}'
+    monkeypatch.setattr(engine, 'transport', fail)
+    assert cli.main(w.args) == 2
+    assert len(calls) == 1
+    assert not (w.out / 'static').exists()
+    attempt = json.loads((w.out / 'video/attempts.jsonl').read_text())
+    assert attempt['status'] == 'HTTP_ERROR'
+    assert cli.main(w.args) == 2
+    assert len(calls) == 1  # No automatic retry or repeated billing.
+
+
+def test_completed_plan_rejects_changed_settings(workflow):
+    w = workflow
+    assert cli.main(['test', *w.args]) == 0
+    settings = json.loads(w.settings.read_text())
+    settings['base_url'] = 'https://different.example/v1'
+    w.settings.write_text(json.dumps(settings))
+    assert cli.main(w.args) == 2
+    assert len(w.sent) == 20

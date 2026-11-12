@@ -4,16 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vlm-psychophysics-subset"
-version = "0.3.0"
+version = "0.4.0"
 description = "API evaluation for the frozen 1480-video visual psychophysics subset"
 requires-python = ">=3.11"
-dependencies = ["huggingface-hub>=1.0", "hf-xet>=1.1"]
+dependencies = ["huggingface-hub>=1.0", "hf-xet>=1.1", "av>=14", "numpy>=1.26", "pillow>=10"]
 
 [project.optional-dependencies]
 # Compatibility with installation commands distributed before the API-only release.
 download = []
 frames = ["av>=14", "numpy>=1.26", "pillow>=10"]
-sdk = ["openai>=1", "requests>=2"]
 test = ["pytest>=8", "av>=14", "numpy>=1.26", "pillow>=10"]
 
 [project.scripts]
