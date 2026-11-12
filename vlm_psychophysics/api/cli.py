@@ -998,6 +998,8 @@ def execution(out, plan, rows, args, pilot):
                         "SENSITIVE_RESPONSE_WITHHELD",
                     } or item.get("http_status") in (401, 403, 429):
                         stop = f'Stopped on {item.get("http_status") or status}'
+                    elif pilot and failed:
+                        stop = f'Stopped on pilot {status}'
                     elif recent_failures >= 3 and not pilot:
                         stop = "Stopped after three consecutive source or provider failures"
                 if not stop:
