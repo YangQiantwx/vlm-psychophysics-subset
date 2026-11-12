@@ -169,7 +169,7 @@ def main(argv=None):
         delivery = options.get('video_delivery', 'ordered-images')
         if delivery not in engine.GATEWAY_VIDEO_DELIVERIES: raise ValueError('Unknown video delivery.')
         if args.reasoning_effort:
-            allowed = {'astra': {'low','medium','high','xhigh','max'}, 'kimi': {'low','high','max'}}
+            allowed = {'astra': {'low','medium','high','xhigh','max'}, 'kimi': {'low','medium','high','max'}}
             if args.reasoning_effort not in allowed.get(name, set()):
                 raise ValueError('This preset does not expose that reasoning field through Chat Completions.')
         tokens, workers = int(options.get('max_tokens', 4096)), int(options.get('concurrency', 1))
