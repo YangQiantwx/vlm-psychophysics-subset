@@ -30,22 +30,15 @@ Choose a shortcut from the [model list](#models). No code edits needed.
 | `qwen` | **Alibaba Qwen3.8 Max** | Prefers `qwen3.8-max-0902`; documented dated alias or `qwen3.8-max` if offered |
 | `qwen-flash` | Alibaba Qwen3.8 Flash | `qwen3.8-flash` |
 
-Gemini candidates (previous generation first):
+Gemini candidates (choose any available in your account):
 
 | Shortcut | Full model name | API model ID | Lowest reasoning |
 |---|---|---|---|
-| `gemini-pro` (or `gemini`) | Google Gemini 3.1 Pro | `gemini-3.1-pro-preview` | `low` |
-| `gemini-3-flash` | Google Gemini 3 Flash | `gemini-3-flash-preview` | `minimal` |
-| `gemini-3.6-flash` | Google Gemini 3.6 Flash | `gemini-3.6-flash` | `minimal` |
-| `gemini-3.5-flash-lite` | Google Gemini 3.5 Flash-Lite | `gemini-3.5-flash-lite` | `minimal` |
-| `gemini-3.1-flash-lite` | Google Gemini 3.1 Flash-Lite | `gemini-3.1-flash-lite` | `minimal` |
+| `gemini-carbon` | Google Gemini 4 Carbon | `gemini-4-carbon` | `low` |
+| `gemini-argon` | Google Gemini 4 Argon | `gemini-4-argon` | `low` |
 | `gemini-flash` | Google Gemini 3.8 Flash | `gemini-3.8-flash` | `low` |
-| `gemini-carbon` | Google Gemini 4 Carbon — optional if accessible | `gemini-4-carbon` | `low` |
-| `gemini-argon` | Google Gemini 4 Argon — optional if accessible | `gemini-4-argon` | `low` |
 
-These are candidates, not a requirement to run every model. Company-account availability is checked at startup. `qwen` means **Max**; `gemini` means **3.1 Pro**. No automatic substitution with another model. Run, for example, `python run.py gemini-pro`.
-
-Older account-only options: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`. These are not presets here: Google restricts access to existing users and will redirect 2.5 Pro/Flash requests to newer models from **2026-12-01**. Confirm the actual served version before considering a legacy comparison. [Google model status](https://aistudio.google.com/docs/models)
+These are candidates, not a requirement to run every model. Company-account availability is checked at startup. `qwen` means **Max**. Choose an explicit Gemini shortcut, for example `python run.py gemini-flash`. No automatic substitution with another model.
 
 Paste your company API key when prompted, or use `--key-file /path/to/key.txt`. `NVIDIA_API_KEY` also works. NVIDIA Gateway is preset; the script looks up the exact model ID in your account.
 
@@ -85,7 +78,7 @@ Optional: `--base-url` for another company endpoint; `--model-id` for an exact r
 | `kimi` / Kimi K3.1 Pro | 180 ordered PNGs | Chat Completions | `reasoning_effort=low` (NVIDIA reference default) | `max_tokens=4096` |
 | `qwen` / Qwen3.8 Max, prefers 0902 | 180 PNGs in a `video` array | Chat Completions | `enable_thinking=false` | `max_tokens=4096` |
 | `qwen-flash` / Qwen3.8 Flash | Same as Qwen Max | Chat Completions | Same as Qwen Max | `max_tokens=4096` |
-| All Gemini presets above | 180 ordered PNGs | Chat Completions | `reasoning_effort=minimal` or `low`, per model list | `max_tokens=4096` |
+| All Gemini presets above | 180 ordered PNGs | Chat Completions | `reasoning_effort=low` | `max_tokens=4096` |
 
 | Shared setting | Requested protocol |
 |---|---|
@@ -107,7 +100,7 @@ Settings previews and run startup expose the requested values. Unsupported field
 
 T5 includes the reference image first. Static uses the prescribed 1–4 images. The client verifies source hashes and decoded frame order; it never silently resizes, drops frames or switches models. Frame delivery is recorded separately from the provider's unobserved internal processing. Qwen3.8 frame-list timestamp behavior is not specified by the vendor; source timing (60 fps) is retained in the request text and evidence.
 
-For Qwen, `--video images` explicitly switches to separate image blocks. Kimi, Qwen and Gemini also offer `--video native` for company routes accepting inline MP4: server sampling is then unknown and this is recorded as a separate comparison. Native video is not automatically treated as all-frame input. Gemini native delivery uses Google's documented Chat Completions `image_url` part containing a `data:video/mp4;base64,...` blob; the reference remains a PNG part first. This needs the same capability in the company gateway. Google's native video support does not guarantee an identical internal gateway route. For example: `python run.py test gemini --input video --video native`; keep those options when continuing. The default `python run.py gemini` retains the 180-frame comparison. Large requests remain subject to the company's payload limits; errors stop the run instead of reducing the input.
+For Qwen, `--video images` explicitly switches to separate image blocks. Kimi, Qwen and Gemini also offer `--video native` for company routes accepting inline MP4: server sampling is then unknown and this is recorded as a separate comparison. Native video is not automatically treated as all-frame input. Gemini native delivery uses Google's documented Chat Completions `image_url` part containing a `data:video/mp4;base64,...` blob; the reference remains a PNG part first. This needs the same capability in the company gateway. Google's native video support does not guarantee an identical internal gateway route. For example: `python run.py test gemini-flash --input video --video native`; keep those options when continuing. The default `python run.py gemini-flash` retains the 180-frame comparison. Large requests remain subject to the company's payload limits; errors stop the run instead of reducing the input.
 
 Official references checked on 2026-11-11: [Astra](https://developers.openai.com/api/docs/models/gpt-6-astra), [OpenAI vision](https://developers.openai.com/api/docs/guides/images-vision), [Opus 5.5](https://platform.claude.com/docs/en/models/opus-5-5/overview), [Claude effort](https://platform.claude.com/docs/en/build-with-claude/effort), [Claude vision](https://platform.claude.com/docs/en/build-with-claude/vision), [Kimi NVIDIA API](https://docs.api.nvidia.com/nim/reference/moonshotai-kimi-k3_1-pro-infer), [Qwen](https://www.alibabacloud.com/help/en/model-studio/vision), [Qwen thinking](https://www.alibabacloud.com/help/en/model-studio/deep-thinking), [Gateway protocols](https://docs.nvidia.com/nvcf/overview/llm-gateway), [Gemini models](https://aistudio.google.com/docs/models), [Gemini thinking levels](https://aistudio.google.com/docs/thinking#thinking-levels), [Gemini Chat Completions](https://aistudio.google.com/docs/openai), [Google multimodal parts and token fields](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/migrate/openai/overview#supported_parameters). These establish request formats; the initial pilot checks your account's actual route.
 

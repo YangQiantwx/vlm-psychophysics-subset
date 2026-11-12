@@ -198,13 +198,13 @@ def test_model_shortcut_uses_vendor_fields_and_company_route(workflow, monkeypat
 def test_gemini_native_shortcut_keeps_reference_and_resumes(workflow, monkeypatch):
     import base64
     w = workflow
-    exact = 'company/gemini-3-flash-preview'
+    exact = 'company/gemini-3.8-flash'
     monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: [exact])
     sent = []
     def transport(payload, key, config):
         body = json.loads(payload)
         sent.append(body)
-        assert body['model'] == exact and body['reasoning_effort'] == 'minimal'
+        assert body['model'] == exact and body['reasoning_effort'] == 'low'
         assert body['max_tokens'] == 4096 and 'temperature' not in body
         *parts, question = body['messages'][0]['content']
         assert all(p['type'] == 'image_url' for p in parts)
@@ -221,7 +221,7 @@ def test_gemini_native_shortcut_keeps_reference_and_resumes(workflow, monkeypatc
         return 200, {}, json.dumps(dict(model=exact, choices=[
             dict(finish_reason='stop', message=dict(content=answer))])).encode()
     monkeypatch.setattr(engine, 'transport', transport)
-    args = ['gemini-3-flash', *w.args, '--video', 'native']
+    args = ['gemini-flash', *w.args, '--video', 'native']
     assert cli.main(args) == 0
     assert len(sent) == 30
     assert cli.main(args) == 0
@@ -276,7 +276,9 @@ def test_model_resolution_is_exact_and_does_not_substitute(monkeypatch):
     assert cli.presets.resolve_model('opus', ['a/claude-opus-5-5']) == 'a/claude-opus-5-5'
     assert cli.presets.resolve_model('gemini-carbon', ['google/gemini-4-carbon', 'google/gemini-4-argon']) == 'google/gemini-4-carbon'
     assert cli.presets.preset_name('gemini-4-argon') == 'gemini-argon'
-    assert cli.presets.preset_name('gemini') == 'gemini-pro'
+    assert {n for n in cli.presets.PRESETS if n.startswith('gemini')} == {
+        'gemini-carbon', 'gemini-argon', 'gemini-flash'}
+    assert cli.presets.preset_name('gemini') not in cli.presets.PRESETS
     with pytest.raises(ValueError, match='not found'):
         cli.presets.resolve_model('gemini-carbon', ['google/gemini-4-argon'])
     assert cli.presets.resolve_model('qwen', ['q/qwen3.8-max', 'q/qwen3.8-max-0902']) == 'q/qwen3.8-max-0902'

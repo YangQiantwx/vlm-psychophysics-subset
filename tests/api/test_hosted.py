@@ -474,7 +474,7 @@ def test_all_frame_batch_requires_server_evidence(tmp_path, monkeypatch):
     ('nvidia-qwen', 'company/qwen3.8-max-0902', 'NVIDIA_API_KEY'),
     ('nvidia-opus', 'company/claude-opus-5-5', 'NVIDIA_API_KEY'),
     ('nvidia-gemini', 'company/gemini-4-carbon', 'NVIDIA_API_KEY'),
-    ('nvidia-gemini-native', 'company/gemini-3-flash-preview', 'NVIDIA_API_KEY'),
+    ('nvidia-gemini-native', 'company/gemini-3.8-flash', 'NVIDIA_API_KEY'),
 ])
 def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider, model, key_env):
     import numpy as np
@@ -542,7 +542,7 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
     elif provider == 'nvidia-gemini-native':
         raw = _response(' YES! ')
         options = ['--video-delivery', 'native', '--native-video-part', 'image_url',
-                   '--token-field', 'max_tokens', '--reasoning-effort', 'minimal']
+                   '--token-field', 'max_tokens', '--reasoning-effort', 'low']
     else:
         raw = _response(' YES! ')
         options = ['--video-delivery', 'ordered-images', '--image-detail', 'high',
@@ -614,7 +614,7 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
         assert config['native_video_part'] == 'image_url' and config['video_delivery'] == 'native'
         assert 'video_prompt_prefix' not in config
         assert body['model'] == model and body['max_tokens'] == 4096
-        assert body['reasoning_effort'] == 'minimal'
+        assert body['reasoning_effort'] == 'low'
         reference, clip, question = body['messages'][0]['content']
         assert question == {'type': 'text', 'text': prompt}
         assert reference['type'] == clip['type'] == 'image_url'

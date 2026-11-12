@@ -35,21 +35,6 @@ PRESETS = {
     'qwen-flash': dict(ids=('qwen3.8-flash',), delivery='video-frames', token_field='max_tokens',
                        detail=None, reasoning=None, native=True, enable_thinking=False,
                        reference='https://www.alibabacloud.com/help/en/model-studio/vision'),
-    'gemini-pro': dict(ids=('gemini-3.1-pro-preview',), delivery='ordered-images', token_field='max_tokens',
-                         detail=None, reasoning='low', native=True, native_video_part='image_url',
-                         reference='https://aistudio.google.com/docs/openai'),
-    'gemini-3-flash': dict(ids=('gemini-3-flash-preview',), delivery='ordered-images', token_field='max_tokens',
-                         detail=None, reasoning='minimal', native=True, native_video_part='image_url',
-                         reference='https://aistudio.google.com/docs/openai'),
-    'gemini-3.6-flash': dict(ids=('gemini-3.6-flash',), delivery='ordered-images', token_field='max_tokens',
-                         detail=None, reasoning='minimal', native=True, native_video_part='image_url',
-                         reference='https://aistudio.google.com/docs/openai'),
-    'gemini-3.5-flash-lite': dict(ids=('gemini-3.5-flash-lite',), delivery='ordered-images', token_field='max_tokens',
-                         detail=None, reasoning='minimal', native=True, native_video_part='image_url',
-                         reference='https://aistudio.google.com/docs/openai'),
-    'gemini-3.1-flash-lite': dict(ids=('gemini-3.1-flash-lite',), delivery='ordered-images', token_field='max_tokens',
-                         detail=None, reasoning='minimal', native=True, native_video_part='image_url',
-                         reference='https://aistudio.google.com/docs/openai'),
     'gemini-flash': dict(ids=('gemini-3.8-flash',), delivery='ordered-images', token_field='max_tokens',
                          detail=None, reasoning='low', native=True, native_video_part='image_url',
                          reference='https://aistudio.google.com/docs/openai'),
@@ -62,9 +47,8 @@ PRESETS = {
 }
 ALIASES = {'astral': 'astra', 'gpt-6-astra': 'astra', 'opus5.5': 'opus', 'opus-5.5': 'opus', 'claude-opus-5-5': 'opus',
            'kimi-k3.1-pro': 'kimi', 'qwen3.8-max': 'qwen', 'qwen3.8-flash': 'qwen-flash',
-           'gemini': 'gemini-pro', 'gemini-4-carbon': 'gemini-carbon', 'gemini-4-argon': 'gemini-argon',
-           'gemini-3.8-flash': 'gemini-flash', 'gemini-3.1-pro-preview': 'gemini-pro',
-           'gemini-3-flash-preview': 'gemini-3-flash'}
+           'gemini-4-carbon': 'gemini-carbon', 'gemini-4-argon': 'gemini-argon',
+           'gemini-3.8-flash': 'gemini-flash'}
 
 
 def preset_name(value):

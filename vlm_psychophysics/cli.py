@@ -176,8 +176,7 @@ def main(argv=None):
         if preset and options.get('reasoning_effort'):
             allowed = {'astra': {'low','medium','high','xhigh','max'}, 'kimi': {'low','medium','high','max'},
                        'opus': {'low','medium','high','xhigh','max'},
-                       **{n: {'low','medium','high'} | ({'minimal'} if p['reasoning'] == 'minimal' else set())
-                          for n, p in presets.PRESETS.items() if n.startswith('gemini')}}
+                       **{n: {'low','medium','high'} for n in presets.PRESETS if n.startswith('gemini')}}
             if options['reasoning_effort'] not in allowed.get(name, set()):
                 raise ValueError('This preset does not expose that reasoning effort.')
         thinking = options.get('enable_thinking')
