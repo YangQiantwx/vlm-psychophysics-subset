@@ -1,3 +1,3 @@
-"""Package entry for the same generation and evaluation commands as run.py."""
+"""Package entry for the hosted API evaluator."""
 from .cli import main
 raise SystemExit(main())

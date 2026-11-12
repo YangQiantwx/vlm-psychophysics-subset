@@ -124,5 +124,61 @@
     "supported native video/mixed input",
     "image count and request size limits",
     "server processor/frame sampling/tensor identity"
-  ]
+  ],
+  "api_only_followup": {
+    "baseline_complete_checkout": "9b9cebf387ba891a69c67e74c9db4afee6b0da0d",
+    "files_before": 58,
+    "files_after": 29,
+    "removed_duplicate_code_files": 29,
+    "removed_duplicate_code_bytes": 350701,
+    "recovery": "git show 9b9cebf387ba891a69c67e74c9db4afee6b0da0d:PATH",
+    "scientific_data_removed": false,
+    "api_tests_passed": 27,
+    "core_dependency_names": [
+      "huggingface-hub",
+      "hf-xet"
+    ],
+    "core_entry_works_without_site_packages": true,
+    "original_input_and_scoring_functions_retained_verbatim": 10,
+    "static_independent_calls": 1346,
+    "static_image_presentations": 2778,
+    "all_frame_video_presentations": 266496,
+    "removed_paths": [
+      "configs/runtime-lock.json",
+      "generate.py",
+      "tests/runtime/test_qsa.py",
+      "tests/test_delivery_assets.py",
+      "tests/test_delivery_pipeline.py",
+      "vlm_psychophysics/assets.py",
+      "vlm_psychophysics/generation.py",
+      "vlm_psychophysics/generators/_classic.py",
+      "vlm_psychophysics/generators/_natural_t2.py",
+      "vlm_psychophysics/generators/_natural_t4.py",
+      "vlm_psychophysics/generators/classic_events.py",
+      "vlm_psychophysics/generators/events.py",
+      "vlm_psychophysics/generators/natural.py",
+      "vlm_psychophysics/generators/natural_common.py",
+      "vlm_psychophysics/generators/natural_motion.py",
+      "vlm_psychophysics/generators/natural_orientation.py",
+      "vlm_psychophysics/generators/raster.py",
+      "vlm_psychophysics/generators/records.py",
+      "vlm_psychophysics/generators/verify.py",
+      "vlm_psychophysics/inputs.py",
+      "vlm_psychophysics/models.py",
+      "vlm_psychophysics/observers.py",
+      "vlm_psychophysics/paired_results.py",
+      "vlm_psychophysics/runner.py",
+      "vlm_psychophysics/runtime/__init__.py",
+      "vlm_psychophysics/runtime/qsa.py",
+      "vlm_psychophysics/runtime_compat/__init__.py",
+      "vlm_psychophysics/runtime_compat/classic_precision_qsa_determinism.py",
+      "vlm_psychophysics/stimuli.py"
+    ],
+    "metadata_files_rebuilt_identically": 59,
+    "full_and_subset_scores_identical": true,
+    "api_plans": {
+      "video": 1480,
+      "static": 1346
+    }
+  }
 }

@@ -2,6 +2,10 @@
 
 The API runner evaluates the frozen 1,480 video trials and their linked static inputs. It downloads and SHA-256 verifies the selected files from the pinned dataset. Each call contains the stimulus and published task prompt in one user message. Trial IDs, filenames, condition metadata and answer keys stay local. Shared static inputs are called once per `static_case_id` and linked back to each corresponding video trial.
 
+The recommended comparison runs both video and static: 1,480 video calls plus 1,346 independent static calls per model. Static presents 2,778 images in total (1–4 per call), so its visual input is much smaller than the all-180-frame video route. Use the returned `usage` records to measure the selected service's actual token use.
+
+Install the core runner with `python -m pip install -e .`. Add `.[frames]` for ordered frame delivery and `.[sdk]` for the optional SDK example below.
+
 ## Model and input
 
 Set `NVIDIA_API_KEY` in your shell and set `NVIDIA_MODEL_ID` to the exact served ID supplied by the gateway operator. With the optional OpenAI SDK, this read-only call lists model IDs visible to your account.

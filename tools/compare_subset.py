@@ -34,7 +34,7 @@ def main():
     args = parser.parse_args()
     # Explicit repo identity is independent of the local directory's chosen name.
     full, full_sha = read_results_for(args.parent_root, PARENT, PARENT_REVISION)
-    pin = json.loads((ROOT / 'configs/models.json').read_text())['dataset']
+    pin = json.loads((ROOT / 'configs/dataset.json').read_text())['dataset']
     selected, selected_sha = read_results_for(args.subset_root, pin['repo_id'], pin['revision'])
     full_map = {}
     counts = defaultdict(lambda: [0, 0, 0, 0])
