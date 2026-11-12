@@ -126,7 +126,7 @@ def main(argv=None):
         argv.insert(0, 'run')
     parser = argparse.ArgumentParser(description='Choose a model and run the frozen benchmark. No code edits needed.')
     parser.add_argument('command', nargs='?', default='run', choices=commands)
-    parser.add_argument('model', nargs='?', help='astra, opus, kimi, qwen or qwen-flash (default: astra)')
+    parser.add_argument('model', nargs='?', help=', '.join(presets.PRESETS) + ' (default: astra)')
     parser.add_argument('--key-file', type=Path, help='Text file containing the company API key')
     parser.add_argument('--input', choices=('both', 'video', 'static'), default='both', help='Inputs to run (default: both)')
     parser.add_argument('--limit', type=int, help='Maximum NEW calls per input type in this invocation, including pilots')
@@ -140,7 +140,7 @@ def main(argv=None):
     extra.add_argument('--video', choices=('native', 'images'), help='Explicit transport override; native may sample frames')
     extra.add_argument('--max-tokens', type=int, help='Output cap, including reasoning where supported (default: 4096)')
     extra.add_argument('--concurrency', type=int, help='Concurrent requests after pilots (default: 1)')
-    extra.add_argument('--reasoning-effort', choices=('low', 'medium', 'high', 'xhigh', 'max'))
+    extra.add_argument('--reasoning-effort', choices=('minimal', 'low', 'medium', 'high', 'xhigh', 'max'))
     args = parser.parse_args(argv)
     try:
         if args.command == 'models':
@@ -161,7 +161,7 @@ def main(argv=None):
         name = presets.preset_name(args.model or settings.get('model', 'astra'))
         preset = presets.PRESETS.get(name)
         if args.model and preset is None:
-            raise ValueError('Choose a preset: astra, opus, kimi, qwen, qwen-flash. No model is substituted.')
+            raise ValueError('Choose a preset: ' + ', '.join(presets.PRESETS) + '. No model is substituted.')
         if args.limit is not None and (args.limit < 1 or args.command != 'run'):
             raise ValueError('--limit must be positive and is used with run, not test or eval.')
         options = presets.defaults(name, args.video) if preset else dict(settings)
@@ -175,7 +175,9 @@ def main(argv=None):
         if delivery not in engine.GATEWAY_VIDEO_DELIVERIES: raise ValueError('Unknown video delivery.')
         if preset and options.get('reasoning_effort'):
             allowed = {'astra': {'low','medium','high','xhigh','max'}, 'kimi': {'low','medium','high','max'},
-                       'opus': {'low','medium','high','xhigh','max'}}
+                       'opus': {'low','medium','high','xhigh','max'},
+                       **{n: {'low','medium','high'} | ({'minimal'} if p['reasoning'] == 'minimal' else set())
+                          for n, p in presets.PRESETS.items() if n.startswith('gemini')}}
             if options['reasoning_effort'] not in allowed.get(name, set()):
                 raise ValueError('This preset does not expose that reasoning effort.')
         thinking = options.get('enable_thinking')
@@ -201,6 +203,8 @@ def main(argv=None):
                             and thinking == preset.get('enable_thinking') else 'custom',
                             api_format=options.get('api_format', 'chat'),
                             dataset_revision=release.REVISION)
+        if preset and delivery == 'native' and preset.get('native_video_part'):
+            run_settings['native_video_part'] = preset['native_video_part']
         if args.command == 'settings':
             fields = {'model': model, 'stream': False, run_settings['token_field']: tokens}
             if run_settings['reasoning_effort']:
@@ -262,6 +266,8 @@ def main(argv=None):
                           '--token-field',run_settings['token_field']]
                 common += ['--api-format', run_settings['api_format']]
                 if mode == 'video': common += ['--video-delivery', delivery]
+                if mode == 'video' and run_settings.get('native_video_part'):
+                    common += ['--native-video-part', run_settings['native_video_part']]
                 if run_settings['image_detail']: common += ['--image-detail', run_settings['image_detail']]
                 if run_settings['reasoning_effort']: common += ['--reasoning-effort', run_settings['reasoning_effort']]
                 if thinking is False: common += ['--disable-thinking']

@@ -473,6 +473,8 @@ def test_all_frame_batch_requires_server_evidence(tmp_path, monkeypatch):
     ('nvidia-internal', 'openai/openai/gpt-6-astra', 'NVIDIA_API_KEY'),
     ('nvidia-qwen', 'company/qwen3.8-max-0902', 'NVIDIA_API_KEY'),
     ('nvidia-opus', 'company/claude-opus-5-5', 'NVIDIA_API_KEY'),
+    ('nvidia-gemini', 'company/gemini-4-carbon', 'NVIDIA_API_KEY'),
+    ('nvidia-gemini-native', 'company/gemini-3-flash-preview', 'NVIDIA_API_KEY'),
 ])
 def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider, model, key_env):
     import numpy as np
@@ -534,6 +536,13 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
     elif provider == 'nvidia-qwen':
         raw = _response(' YES! ')
         options = ['--video-delivery', 'video-frames', '--token-field', 'max_tokens', '--disable-thinking']
+    elif provider == 'nvidia-gemini':
+        raw = _response(' YES! ')
+        options = ['--video-delivery', 'ordered-images', '--token-field', 'max_tokens', '--reasoning-effort', 'low']
+    elif provider == 'nvidia-gemini-native':
+        raw = _response(' YES! ')
+        options = ['--video-delivery', 'native', '--native-video-part', 'image_url',
+                   '--token-field', 'max_tokens', '--reasoning-effort', 'minimal']
     else:
         raw = _response(' YES! ')
         options = ['--video-delivery', 'ordered-images', '--image-detail', 'high',
@@ -600,7 +609,21 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
     body = json.loads(data)
     config = json.loads((out / 'config.json').read_bytes())
     assert config['dataset_revision'] == release.REVISION
-    if provider in {'qwen-frames', 'nvidia-qwen'}:
+    if provider == 'nvidia-gemini-native':
+        assert path == '/v1/chat/completions'
+        assert config['native_video_part'] == 'image_url' and config['video_delivery'] == 'native'
+        assert 'video_prompt_prefix' not in config
+        assert body['model'] == model and body['max_tokens'] == 4096
+        assert body['reasoning_effort'] == 'minimal'
+        reference, clip, question = body['messages'][0]['content']
+        assert question == {'type': 'text', 'text': prompt}
+        assert reference['type'] == clip['type'] == 'image_url'
+        assert base64.b64decode(reference['image_url']['url'].split(',')[1]) == ref_bytes
+        header, encoded = clip['image_url']['url'].split(',', 1)
+        assert header == 'data:video/mp4;base64'
+        assert base64.b64decode(encoded, validate=True) == video.read_bytes()
+        assert 'ordered_frames' not in receipt['verified_media'][1]
+    elif provider in {'qwen-frames', 'nvidia-qwen'}:
         assert path == '/v1/chat/completions'
         reference, sequence, question = body['messages'][0]['content']
         assert reference['type'] == 'image_url' and sequence['type'] == 'video'
@@ -656,6 +679,16 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
                 for p in sequence
             )
             images = ['data:image/png;base64,' + p['source']['data'] for p in sequence]
+        elif provider == 'nvidia-gemini':
+            assert path == '/v1/chat/completions'
+            assert body['model'] == model and body['max_tokens'] == 4096
+            assert config['generation_parameters'] == {'reasoning_effort': 'low'}
+            assert body['reasoning_effort'] == 'low'
+            assert 'temperature' not in body and 'enable_thinking' not in body
+            *sequence, question = body['messages'][0]['content']
+            assert question == {'type': 'text', 'text': prefix + prompt}
+            assert all(p['type'] == 'image_url' and 'detail' not in p['image_url'] for p in sequence)
+            images = [p['image_url']['url'] for p in sequence]
         else:
             assert path == '/v1/chat/completions'
             assert config['video_delivery'] == 'ordered-images'
@@ -670,15 +703,16 @@ def test_frame_list_cli_and_raw_return_over_http(tmp_path, monkeypatch, provider
             assert question == {'type': 'text', 'text': prefix + prompt}
             assert all(p['type'] == 'image_url' and p['image_url']['detail'] == 'high' for p in sequence)
             images = [p['image_url']['url'] for p in sequence]
-    assert len(images) == 181 and base64.b64decode(images[0].split(',')[1]) == ref_bytes
-    for i, url in enumerate(images[1:]):
-        header, encoded = url.split(',', 1)
-        assert header == 'data:image/png;base64'
-        with Image.open(BytesIO(base64.b64decode(encoded, validate=True))) as png:
-            assert png.mode == 'RGB' and png.size == (768, 512)
-            assert png.tobytes() == pixels(i)
-    evidence = receipt['verified_media'][1]['ordered_frames']
-    assert evidence == {'count': 180, 'fps': 60, 'rgb_sha256': digest.hexdigest()}
+    if provider != 'nvidia-gemini-native':
+        assert len(images) == 181 and base64.b64decode(images[0].split(',')[1]) == ref_bytes
+        for i, url in enumerate(images[1:]):
+            header, encoded = url.split(',', 1)
+            assert header == 'data:image/png;base64'
+            with Image.open(BytesIO(base64.b64decode(encoded, validate=True))) as png:
+                assert png.mode == 'RGB' and png.size == (768, 512)
+                assert png.tobytes() == pixels(i)
+        evidence = receipt['verified_media'][1]['ordered_frames']
+        assert evidence == {'count': 180, 'fps': 60, 'rgb_sha256': digest.hexdigest()}
     assert base64.b64decode(receipt['response_body_b64']) == raw
     with ZipFile(out / 'return.zip') as package:
         trial, = runner.load_rows(package.read('results.jsonl'))

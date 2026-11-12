@@ -180,7 +180,7 @@ def requested_frame_settings(config):
 def configured(
     out, plan, model, max_tokens, provider=PROVIDER, all_frames=False,
     generation_parameters=None, preset=None,
-    *, video_delivery=None, image_detail=None, token_field=None, api_format=None,
+    *, video_delivery=None, image_detail=None, token_field=None, api_format=None, native_video_part=None,
 ):
     release.require(
         bool(model) and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]+", model)),
@@ -254,6 +254,10 @@ def configured(
         config["processor_visibility"] = "provider controls frame sampling and geometry"
     if provider == PROVIDER and preset is None:
         config["video_delivery"] = video_delivery or "native"
+        if native_video_part:
+            release.require(config['video_delivery'] == 'native' and api_format != 'messages',
+                            'Native video part applies only to native Chat Completions video')
+            config['native_video_part'] = native_video_part
         if image_detail is not None:
             config["image_detail"] = image_detail
         config["token_field"] = token_field or "max_completion_tokens"
@@ -630,7 +634,7 @@ def request_body(row, config, media_root, *, download_missing=False):
         parts = []
         for mime, data in media:
             release.require(mime in {"image/png", "video/mp4", "video/x-matroska"}, "Unsupported media MIME type")
-            kind = "image_url" if mime == "image/png" else "video_url"
+            kind = "image_url" if mime == "image/png" else config.get('native_video_part', 'video_url')
             parts.append({"type": kind, kind: {"url": f"data:{mime};base64,{data}"}})
         for part in frame_parts:
             if part["type"] == "video" and config.get("video_delivery") == "video-frames":
@@ -865,6 +869,7 @@ def execution(out, plan, rows, args, pilot):
         image_detail=getattr(args, "image_detail", None),
         token_field=getattr(args, "token_field", None),
         api_format=getattr(args, "api_format", None),
+        native_video_part=getattr(args, 'native_video_part', None),
     )
     with closing(open_db(out)) as db:
         history = records(db)
@@ -1552,12 +1557,13 @@ def main(argv=None):
         help="NVIDIA Gateway output token field (default: max_completion_tokens).",
     )
     parser.add_argument("--api-format", choices=("chat", "messages"))
+    parser.add_argument('--native-video-part', choices=('image_url', 'video_url'))
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--temperature", type=float)
     parser.add_argument("--top-p", type=float)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--disable-thinking", action="store_true")
-    parser.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"))
+    parser.add_argument("--reasoning-effort", choices=("minimal", "low", "medium", "high", "xhigh", "max"))
     parser.add_argument("--reasoning-mode", choices=("standard", "pro"))
     budget = parser.add_mutually_exclusive_group()
     budget.add_argument(

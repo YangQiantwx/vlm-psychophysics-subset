@@ -151,7 +151,7 @@ def test_completed_plan_rejects_changed_settings(workflow):
     assert len(w.sent) == 20
 
 
-@pytest.mark.parametrize('name', ['astra', 'opus', 'kimi', 'qwen', 'qwen-flash'])
+@pytest.mark.parametrize('name', list(cli.presets.PRESETS))
 def test_model_shortcut_uses_vendor_fields_and_company_route(workflow, monkeypatch, name):
     w = workflow
     preset = cli.presets.PRESETS[name]
@@ -179,7 +179,9 @@ def test_model_shortcut_uses_vendor_fields_and_company_route(workflow, monkeypat
             if name == 'astra':
                 assert body['reasoning_effort'] == 'low'
                 assert all(p['image_url']['detail'] == 'original' for p in parts[:-1])
-            elif name == 'kimi': assert body['reasoning_effort'] == 'low'
+            elif name == 'kimi' or name.startswith('gemini'):
+                assert body['reasoning_effort'] == preset['reasoning']
+                assert config['generation_parameters'] == {'reasoning_effort': preset['reasoning']}
             else:
                 assert 'reasoning_effort' not in body and body['enable_thinking'] is False
                 assert config['generation_parameters'] == {'enable_thinking': False}
@@ -191,6 +193,41 @@ def test_model_shortcut_uses_vendor_fields_and_company_route(workflow, monkeypat
     assert len(sent) == 10
     assert not (w.out / 'video').exists()
     assert engine.verify(w.out / 'static/return.zip')['request_attempts'] == 10
+
+
+def test_gemini_native_shortcut_keeps_reference_and_resumes(workflow, monkeypatch):
+    import base64
+    w = workflow
+    exact = 'company/gemini-3-flash-preview'
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: [exact])
+    sent = []
+    def transport(payload, key, config):
+        body = json.loads(payload)
+        sent.append(body)
+        assert body['model'] == exact and body['reasoning_effort'] == 'minimal'
+        assert body['max_tokens'] == 4096 and 'temperature' not in body
+        *parts, question = body['messages'][0]['content']
+        assert all(p['type'] == 'image_url' for p in parts)
+        is_video = any(p['image_url']['url'].startswith('data:video/') for p in parts)
+        if is_video:
+            assert config['native_video_part'] == 'image_url'
+            clip = base64.b64decode(parts[-1]['image_url']['url'].split(',')[1])
+            assert b' video ' in clip
+            if question['text'] == 'Match the target.':
+                assert len(parts) == 2 and parts[0]['image_url']['url'].startswith('data:image/png;')
+        else:
+            assert 'native_video_part' not in config
+        answer = 'YES' if question['text'] == 'Match the target.' else 'LEFT'
+        return 200, {}, json.dumps(dict(model=exact, choices=[
+            dict(finish_reason='stop', message=dict(content=answer))])).encode()
+    monkeypatch.setattr(engine, 'transport', transport)
+    args = ['gemini-3-flash', *w.args, '--video', 'native']
+    assert cli.main(args) == 0
+    assert len(sent) == 30
+    assert cli.main(args) == 0
+    assert len(sent) == 30
+    for mode, calls in [('video', 20), ('static', 10)]:
+        assert engine.verify(w.out / mode / 'return.zip')['request_attempts'] == calls
 
 
 def test_budget_partial_resume_does_not_change_plan(workflow):
@@ -237,6 +274,11 @@ def test_concurrency_change_reuses_saved_answers(workflow, monkeypatch):
 
 def test_model_resolution_is_exact_and_does_not_substitute(monkeypatch):
     assert cli.presets.resolve_model('opus', ['a/claude-opus-5-5']) == 'a/claude-opus-5-5'
+    assert cli.presets.resolve_model('gemini-carbon', ['google/gemini-4-carbon', 'google/gemini-4-argon']) == 'google/gemini-4-carbon'
+    assert cli.presets.preset_name('gemini-4-argon') == 'gemini-argon'
+    assert cli.presets.preset_name('gemini') == 'gemini-pro'
+    with pytest.raises(ValueError, match='not found'):
+        cli.presets.resolve_model('gemini-carbon', ['google/gemini-4-argon'])
     assert cli.presets.resolve_model('qwen', ['q/qwen3.8-max', 'q/qwen3.8-max-0902']) == 'q/qwen3.8-max-0902'
     with pytest.raises(ValueError, match='not found'):
         cli.presets.resolve_model('kimi', ['q/kimi-k3.1-pro-highspeed', 'q/kimi-k2.5'])
@@ -256,7 +298,7 @@ def test_model_resolution_is_exact_and_does_not_substitute(monkeypatch):
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize('name', ['astra', 'opus', 'kimi', 'qwen', 'qwen-flash'])
+@pytest.mark.parametrize('name', list(cli.presets.PRESETS))
 def test_settings_preview_never_downloads_or_calls_api(workflow, monkeypatch, capsys, name):
     w = workflow
     monkeypatch.setattr(cli, 'credential', lambda *_: pytest.fail('Preview requested credentials'))
@@ -271,7 +313,7 @@ def test_settings_preview_never_downloads_or_calls_api(workflow, monkeypatch, ca
     assert settings['reasoning_effort'] == preset['reasoning']
     if name == 'opus': assert settings['request_fields']['output_config'] == {'effort': 'low'}
     elif name.startswith('qwen'): assert settings['request_fields']['enable_thinking'] is False
-    else: assert settings['request_fields']['reasoning_effort'] == 'low'
+    else: assert settings['request_fields']['reasoning_effort'] == preset['reasoning']
     assert settings['request_fields'][preset['token_field']] == 2048
     assert settings['video_source']['frames'] == 180 and settings['video_source']['t5_reference_first']
     assert 'temperature' in settings['omitted_fields'] and 'temperature' not in settings['request_fields']
