@@ -1,18 +1,8 @@
 # Run the visual psychophysics benchmark
 
-**Choose a model and enter your NVIDIA company key. The runner handles the rest.**
+**Evaluate vision-language models on a frozen video and static-image benchmark.**
 
-## 1. Get or update the code
-
-Already have the checkout used for Astra? Open a terminal in that folder and run:
-
-```bash
-git pull --ff-only
-python -m pip install -e .
-```
-
-<details>
-<summary>First time? Copy these commands instead</summary>
+## 1. Install
 
 Python 3.11+ on macOS or Linux:
 
@@ -22,11 +12,21 @@ cd vlm-psychophysics-subset
 python -m pip install -e .
 ```
 
+<details>
+<summary>Update an existing installation</summary>
+
+Run from the repository folder:
+
+```bash
+git pull --ff-only
+python -m pip install -e .
+```
+
 </details>
 
-## 2. Download the data — skip if you already have it
+## 2. Download the data
 
-Already downloaded the dataset for Astra? **Skip to step 3.** Otherwise run:
+**Skip this step if the dataset is already available in `dataset/`.**
 
 ```bash
 python run.py download
@@ -40,7 +40,7 @@ This downloads the frozen video and static inputs into `dataset/`. It needs no A
 python run.py
 ```
 
-The requested comparisons are:
+Available presets include:
 
 | Model | Choose in the menu |
 |---|---|
@@ -49,13 +49,13 @@ The requested comparisons are:
 | Qwen3.8 Max | `qwen` |
 | Kimi K3.1 Pro | `kimi` |
 
-**Use your key exactly as you did for Astra.** Keep your existing key file or environment setting; the runner reads it automatically. If you entered the key at the prompt before, paste it at the hidden prompt again. No separate provider or Hugging Face account, image uploads or settings-file edits are needed. Run whichever models your access, quota and time allow.
+The runner reads a configured NVIDIA company key from a key file or environment variable. Otherwise, it prompts for the key with hidden input. Downloads and image preparation are automatic.
 
 The runner checks short pilots, then runs **1,480 videos + 1,346 distinct static comparisons** and packages the results automatically.
 
-- **Finished:** return `submission.zip` and `submission.zip.sha256` from the printed output folder.
+- **Results:** `submission.zip` and `submission.zip.sha256` are saved in the printed output folder.
 - **Stopped or interrupted:** run `python run.py` and select the same model to resume saved work.
-- **Error:** return the printed `support.zip` to Yang; no debugging is needed on your side.
+- **Error:** share the printed `support.zip` with the benchmark maintainer.
 
 Finish an active run before updating the checkout. The initial pilots check account access and input support; saved answers are not requested again.
 
@@ -66,7 +66,7 @@ Finish an active run before updating the checkout. The initial pilots check acco
 
 ## Choose a model
 
-Start with **Gemini 4 Argon**, or **Carbon** for Google's strongest listed model. Qwen3.8 Max, Kimi K3.1 Pro and Claude Opus 5.5 provide the other requested comparisons. Flash and Hydrogen are optional, lower-cost candidates. No model is substituted automatically.
+Presets configure the provider route and input format. The runner resolves the selected model from the account catalog and does not substitute another model.
 
 <details>
 <summary>Exact model IDs and optional comparisons</summary>
@@ -81,13 +81,13 @@ Start with **Gemini 4 Argon**, or **Carbon** for Google's strongest listed model
 | `qwen-flash` | `qwen3.8-flash` | Optional Qwen comparison |
 | `gemini-hydrogen` | `gemini-4-hydrogen` | Optional current Gemini efficient tier |
 | `gemini-flash` | `gemini-3.8-flash` | Optional previous-generation Flash |
-| `astra` | `gpt-6-astra` | Existing company-route comparison |
+| `astra` | `gpt-6-astra` | OpenAI comparison |
 
 </details>
 
 ## Use the NVIDIA company key
 
-**Start here if you already have a company key.** Use the same key and endpoint as the completed Astra run. The runner resolves the exact model from the account's catalog; no separate provider account is needed for this route. These commands prepare the company route; the short test checks actual account access and media acceptance.
+This route uses an NVIDIA company key. The runner resolves the exact model from the account catalog, then checks account access and media support with short pilots.
 
 | Model | One-command run | Video input |
 |---|---|---|
@@ -97,7 +97,7 @@ Start with **Gemini 4 Argon**, or **Carbon** for Google's strongest listed model
 | Qwen Flash | `python run.py qwen-flash` | All 180 lossless PNG URLs in a video array + reference |
 | Kimi Pro | `python run.py kimi` | Original MP4 + T5 reference |
 | Claude Opus | `python run.py opus` | All 180 lossless PNG URLs + reference, Messages API |
-| Astra | `python run.py astra` | Existing 180-image route |
+| Astra | `python run.py astra` | All 180 ordered PNGs + reference |
 
 Paste the key when prompted, set `NVIDIA_API_KEY`, or use `--key-file /path/to/key.txt`. These commands run **1,480 video + 1,346 distinct static calls**, including pilots. Add `--input video` for video only, or `--input static` for static only. To stop after at most 10 pilot calls per input type, insert `test`: `python run.py test opus`. Pilot answers are reused by the full run.
 
@@ -174,7 +174,7 @@ All models run one request at a time by default. Temperature, top-p and seed use
 | Override token cap or concurrency | `--max-tokens 4096 --concurrency 1` |
 | Explicit historical inline-image transport | `--image-transport inline` (company image routes only) |
 
-Pilots cover task × domain and include the large Natural T3 input, the largest Natural T4 MP4, and a Natural T5 double event with its reference. Invalid/truncated pilots stop before the full run. HTTP errors and timeouts save a `return.zip`; return that file to Yang rather than editing the script. Completed answers are never requested again. A timeout with unknown provider completion is not retried automatically.
+Pilots cover task × domain and include the large Natural T3 input, the largest Natural T4 MP4, and a Natural T5 double event with its reference. Invalid/truncated pilots stop before the full run. HTTP errors and timeouts save a `return.zip`; share that file with the benchmark maintainer. Completed answers are never requested again. A timeout with unknown provider completion is not retried automatically.
 
 `--limit` applies per selected input type and counts only new calls in that invocation. It produces partial coverage, not a new representative subset. For DashScope accounts in another region, set the official `DASHSCOPE_BASE_URL` before starting a new run. Company `--base-url` and `--model-id` overrides remain available when an internal route needs them.
 
