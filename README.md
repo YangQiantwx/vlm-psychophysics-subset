@@ -37,6 +37,16 @@ This downloads the frozen video and static inputs into `dataset/`. It needs no A
 python run.py
 ```
 
+**Example — Gemini 4 Argon:** at the model prompt, type `gemini-argon` and press Enter. If prompted for a key, paste the NVIDIA company API key and press Enter; the key is not displayed.
+
+To select the same model directly:
+
+```bash
+python run.py gemini-argon
+```
+
+For Opus, Qwen or Kimi, replace `gemini-argon` with `opus`, `qwen` or `kimi`.
+
 Available presets include:
 
 | Model | Choose in the menu |
