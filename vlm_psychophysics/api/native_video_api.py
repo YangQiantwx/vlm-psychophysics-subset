@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 import hashlib
 from io import BytesIO
+import json
 import os
 import re
+import time
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+from uuid import uuid4
 
 from ..catalog import require
 
@@ -16,10 +22,13 @@ GEMINI = "https://generativelanguage.googleapis.com/v1beta"
 QWEN = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 ASTRA = "https://api.openai.com/v1"
 CLAUDE = "https://api.anthropic.com/v1"
+KIMI = "https://api.moonshot.ai/v1"
 CLAUDE_API_VERSION = "2026-10-21"
+CLAUDE_INLINE_LIMIT = 128_000_000
+CLAUDE_FILE_EXPIRY_SECONDS = 7 * 24 * 60 * 60
 CLAUDE_MODELS = {"claude-opus-5-5", "claude-fable-5-1"}
 CLAUDE_IMAGE_TRANSFORMATIONS = {"oversized_image": "error"}
-GEMINI_MODELS = {"gemini-4-argon", "gemini-3.8-flash", "gemini-3.1-pro-preview"}
+GEMINI_MODELS = {"gemini-4-carbon", "gemini-4-argon", "gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.1-pro-preview"}
 QWEN_ENDPOINT = re.compile(
     r"https://(?:(?:cn-hongkong\.)?dashscope(?:-intl|-us)?\.aliyuncs\.com|"
     r"[a-z0-9-]+\.[a-z0-9-]+\.maas\.aliyuncs\.com)/compatible-mode/v1"
@@ -33,6 +42,7 @@ HOSTED = {
     "qwen-frames": ("DASHSCOPE_API_KEY", 10, {"video/mp4"}),
     "astra": ("OPENAI_API_KEY", None, {"video/mp4"}),
     "claude": ("ANTHROPIC_API_KEY", None, {"video/mp4"}),
+    "kimi": ("MOONSHOT_API_KEY", None, {"video/mp4"}),
 }
 ORDERED_IMAGES = {"astra", "claude"}
 FRAME_LISTS = {"qwen-frames", *ORDERED_IMAGES}
@@ -58,7 +68,7 @@ def model_provider(model):
 
 
 def fixed_endpoint(provider):
-    return {"gemini": GEMINI, "astra": ASTRA, "claude": CLAUDE}.get(provider)
+    return {"gemini": GEMINI, "astra": ASTRA, "claude": CLAUDE, "kimi": KIMI}.get(provider)
 
 
 def vllm_endpoint(base):
@@ -103,6 +113,8 @@ def validate_config(config):
         )
     if provider == "astra":
         require(model.startswith("gpt-6-astra"), "Use a GPT-6 Astra model ID")
+    if provider == "kimi":
+        require(model == 'kimi-k3.1-pro', 'Use the Kimi K3.1 Pro model ID')
     if provider == "claude":
         require(model in CLAUDE_MODELS, "Use claude-opus-5-5 or claude-fable-5-1")
         require(
@@ -231,7 +243,137 @@ def frame_list_request(provider, model, prompt, parts, max_tokens, generation):
         "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": content + [{"type": "text", "text": prompt}]}],
         "stream": False,
+        **generation,
     }
+
+
+def claude_headers(credential):
+    headers = {"Authorization": "Bearer " + credential, "anthropic-version": CLAUDE_API_VERSION}
+    if workspace := os.environ.get("ANTHROPIC_WORKSPACE_ID"):
+        headers["anthropic-workspace-id"] = workspace
+    return headers
+
+
+def upload_claude_png(data, digest, credential):
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    boundary = uuid4().hex
+    payload = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{digest}.png"\r\n'
+        f'Content-Type: image/png\r\n\r\n'
+    ).encode() + data + (
+        f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="expires_in_seconds"\r\n\r\n'
+        f'{CLAUDE_FILE_EXPIRY_SECONDS}\r\n--{boundary}--\r\n'
+    ).encode()
+    request = Request(CLAUDE + "/files", data=payload, method="POST", headers={
+        **claude_headers(credential), "Content-Type": f"multipart/form-data; boundary={boundary}",
+    })
+    opener = build_opener(NoRedirect)
+    for attempt in range(3):
+        try:
+            with opener.open(request, timeout=120) as response:
+                record = json.load(response)
+            break
+        except HTTPError as error:
+            with error:
+                status = error.code
+                delay = error.headers.get("Retry-After", "5")
+            if status != 429 or attempt == 2:
+                raise ValueError(f"Anthropic PNG upload failed (HTTP {status}).") from None
+            time.sleep(min(60, int(delay)) if delay.isdecimal() else 5)
+    file_id = record.get("id")
+    require(
+        isinstance(file_id, str) and bool(re.fullmatch(r"file_[A-Za-z0-9_-]+", file_id))
+        and record.get("size_bytes") == len(data) and record.get("mime_type") == "image/png"
+        and bool(record.get("expires_at")),
+        "Anthropic Files response did not confirm the PNG upload and expiry",
+    )
+    return file_id
+
+
+def claude_file_parts(body, credential):
+    """Reference the same PNG bytes in their original positions, uploading duplicates once per trial."""
+    parts = body["messages"][0]["content"]
+    images = [part for part in parts if part["type"] == "image"]
+    ordered = [part["source"]["data"] for part in images]
+
+    def upload(encoded):
+        data = base64.b64decode(encoded, validate=True)
+        return upload_claude_png(data, hashlib.sha256(data).hexdigest(), credential)
+
+    unique = dict.fromkeys(ordered)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        files = dict(zip(unique, pool.map(upload, unique)))
+    for image, encoded in zip(images, ordered):
+        image["source"] = {"type": "file", "file_id": files[encoded]}
+    return len(images)
+
+
+def upload_qwen_media(data, mime, config, credential):
+    """Use DashScope's model/account-bound 48-hour storage; never expose labeled filenames."""
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    base = config['endpoint'].replace('/compatible-mode/v1', '/api/v1')
+    req = Request(base + '/uploads?action=getPolicy&model=' + config['requested_model'],
+                  headers={'Authorization': 'Bearer ' + credential, 'Content-Type': 'application/json'})
+    opener = build_opener(NoRedirect)
+    try:
+        with opener.open(req, timeout=60) as response:
+            policy = json.load(response)['data']
+        host = urlsplit(policy['upload_host'])
+        require(host.scheme == 'https' and host.hostname and host.hostname.endswith('.aliyuncs.com')
+                and not host.username and not host.password, 'Unexpected DashScope upload host')
+        require(len(data) <= float(policy['max_file_size_mb']) * 1_000_000,
+                'Media exceeds the model temporary-upload limit')
+        filename = hashlib.sha256(data).hexdigest() + ('.png' if mime == 'image/png' else '.mp4')
+        key = policy['upload_dir'].rstrip('/') + '/' + uuid4().hex + '-' + filename
+        fields = {'OSSAccessKeyId': policy['oss_access_key_id'], 'Signature': policy['signature'],
+                  'policy': policy['policy'], 'x-oss-object-acl': policy['x_oss_object_acl'],
+                  'x-oss-forbid-overwrite': policy['x_oss_forbid_overwrite'], 'key': key,
+                  'success_action_status': '200'}
+        boundary = uuid4().hex
+        payload = b''.join((f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+                            f'{value}\r\n').encode() for name, value in fields.items())
+        payload += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+                    f'Content-Type: {mime}\r\n\r\n').encode() + data + f'\r\n--{boundary}--\r\n'.encode()
+        req = Request(policy['upload_host'], data=payload, method='POST',
+                      headers={'Content-Type': 'multipart/form-data; boundary=' + boundary})
+        with opener.open(req, timeout=180) as response:
+            require(response.status == 200, 'DashScope temporary upload failed')
+        return 'oss://' + key
+    except HTTPError as error:
+        with error:
+            status = error.code
+        raise ValueError(f'DashScope temporary upload failed (HTTP {status}).') from None
+
+
+def qwen_file_parts(body, config, credential):
+    """Replace inline bytes with temporary references without changing part/frame order."""
+    parts = body['messages'][0]['content']
+    urls = []
+    for part in parts:
+        if part['type'] == 'video': urls.extend(part['video'])
+        elif part['type'] in {'video_url', 'image_url'}: urls.append(part[part['type']]['url'])
+    unique = dict.fromkeys(urls)
+
+    def upload(url):
+        header, encoded = url.split(',', 1)
+        mime = header.removeprefix('data:').removesuffix(';base64')
+        require(mime in {'image/png', 'video/mp4'}, 'Unsupported temporary media MIME')
+        return upload_qwen_media(base64.b64decode(encoded, validate=True), mime, config, credential)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        mapping = dict(zip(unique, pool.map(upload, unique)))
+    for part in parts:
+        if part['type'] == 'video': part['video'] = [mapping[url] for url in part['video']]
+        elif part['type'] in {'video_url', 'image_url'}:
+            entry = part[part['type']]
+            entry['url'] = mapping[entry['url']]
+    return len(urls)
 
 
 def astra_completion(document):
@@ -268,7 +410,7 @@ def validate_payload_size(provider, base, size):
     elif provider == "astra":
         limit, hint = 512_000_000, ""
     elif provider == "claude":
-        limit, hint = 128_000_000, ""
+        limit, hint = CLAUDE_INLINE_LIMIT, ""
     elif provider == "gemini":
         limit, hint = 20_000_000, ""
     else:
@@ -303,28 +445,42 @@ def claude_completion(document):
     }
 
 
-def request(provider, model, prompt, media, max_tokens, fps):
-    ((mime, data),) = media
-    require(mime in HOSTED[provider][2], "Unsupported hosted video MIME type")
+def request(provider, model, prompt, media, max_tokens, fps, *, panel=False, generation=None):
+    require(bool(media) and all(m in (HOSTED[provider][2] | ({'image/png'} if panel else set()))
+                               for m, _ in media), "Unsupported hosted video MIME type")
+    require(panel or len(media) == 1, 'Expected one video')
+    require(sum(m.startswith('video/') for m, _ in media) <= 1, 'Expected at most one video')
     if provider == "gemini":
-        video = {
-            "inlineData": {"mimeType": mime, "data": data},
-            "videoMetadata": {"fps": fps},
-        }
+        parts = []
+        for mime, data in media:
+            part = {"inlineData": {"mimeType": mime, "data": data}}
+            if mime.startswith('video/'):
+                part['videoMetadata'] = {'fps': fps}
+                if panel: part['mediaProcessing'] = 'STATIC'
+            parts.append(part)
         return {
-            "contents": [{"role": "user", "parts": [video, {"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": max_tokens},
+            "contents": [{"role": "user", "parts": parts + [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": max_tokens, **(generation or {})},
         }
-    url = f"data:{mime};base64,{data}"
-    require(len(url) < 10_000_000, "DashScope inline video exceeds 10 MB encoded")
-    video = {"type": "video_url", "video_url": {"url": url}, "fps": fps}
+    parts = []
+    for mime, data in media:
+        url = f"data:{mime};base64,{data}"
+        if provider == 'qwen' and not panel:
+            require(len(url) < 10_000_000, "DashScope inline video exceeds 10 MB encoded")
+        kind = 'image_url' if mime == 'image/png' else 'video_url'
+        part = {'type': kind, kind: {'url': url}}
+        if provider == 'qwen':
+            if kind == 'video_url': part['fps'] = fps
+            if panel: part.update(min_pixels=SOURCE_WIDTH * SOURCE_HEIGHT, max_pixels=SOURCE_WIDTH * SOURCE_HEIGHT)
+        parts.append(part)
     return {
         "model": model,
         "stream": False,
         "max_tokens": max_tokens,
         "messages": [
-            {"role": "user", "content": [video, {"type": "text", "text": prompt}]}
+            {"role": "user", "content": parts + [{"type": "text", "text": prompt}]}
         ],
+        **(generation or {}),
     }
 
 

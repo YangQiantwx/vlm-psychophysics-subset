@@ -53,12 +53,18 @@ def invoke(argv, mode):
     return code, progress.last
 
 
-def credential(settings, key_file):
-    path = key_file or os.environ.get('API_KEY_FILE') or settings.get('api_key_file')
-    key = (Path(path).expanduser().read_text().strip() if path else
-           os.environ.get('NVIDIA_API_KEY') or os.environ.get('API_KEY'))
+def credential(settings, key_file, direct=False):
+    if direct:
+        provider = 'claude' if direct is True else direct
+        key_name = engine.native_video_api.HOSTED[provider][0]
+        path, env_key = key_file, os.environ.get(key_name)
+    else:
+        path = key_file or os.environ.get('API_KEY_FILE') or settings.get('api_key_file')
+        env_key = os.environ.get('NVIDIA_API_KEY') or os.environ.get('API_KEY')
+    key = Path(path).expanduser().read_text().strip() if path else env_key
     if not key:
-        key = getpass.getpass('Paste your API key (hidden, never saved): ').strip()
+        service = key_name if direct else 'company'
+        key = getpass.getpass(f'Paste your {service} API key (hidden, never saved): ').strip()
     if not key or any(ch.isspace() for ch in key):
         raise ValueError('Use a plain text key file containing only the API key, or paste the key.')
     return key
@@ -135,11 +141,17 @@ def main(argv=None):
     parser.add_argument('--data-root', type=Path, default=Path('dataset'), help=argparse.SUPPRESS)
     extra = parser.add_argument_group('Optional overrides (normally unnecessary)')
     extra.add_argument('--base-url', help='Company Chat Completions base URL ending in /v1')
+    extra.add_argument('--anthropic', action='store_true',
+                       help='Use Opus on the first-party API; large trials use PNG file references')
+    extra.add_argument('--direct', action='store_true',
+                       help='Use the official provider key/API; prepares media uploads automatically')
     extra.add_argument('--model-id', help='Exact account-specific route if /models is unavailable or ambiguous')
     extra.add_argument('--api-format', choices=('chat', 'messages'), help='Override the gateway protocol (Opus defaults to Messages)')
     extra.add_argument('--video', choices=('native', 'images'), help='Explicit transport override; native may sample frames')
     extra.add_argument('--max-tokens', type=int, help='Output cap, including reasoning where supported (default: 4096)')
     extra.add_argument('--concurrency', type=int, help='Concurrent requests after pilots (default: 1)')
+    extra.add_argument('--retry-failed', action='store_true',
+                       help='Retry once only source failures or explicit HTTP 429; never repeat saved answers')
     extra.add_argument('--reasoning-effort', choices=('minimal', 'low', 'medium', 'high', 'xhigh', 'max'))
     args = parser.parse_args(argv)
     try:
@@ -162,6 +174,14 @@ def main(argv=None):
         preset = presets.PRESETS.get(name)
         if args.model and preset is None:
             raise ValueError('Choose a preset: ' + ', '.join(presets.PRESETS) + '. No model is substituted.')
+        if args.anthropic and (name != 'opus' or args.base_url or args.model_id or args.api_format or args.video):
+            raise ValueError('Use --anthropic with the opus shortcut and no route or media overrides.')
+        direct = presets.DIRECT_PROVIDERS.get(name) if args.direct or args.anthropic else None
+        if (args.direct or args.anthropic) and (not direct or args.base_url or args.model_id or args.api_format):
+            raise ValueError('Use --direct with a supported preset and no route overrides.')
+        if direct and args.video == 'images':
+            raise ValueError('Direct mode uses the documented media route; Qwen and Opus retain all 180 PNGs by default.')
+        if direct == 'qwen-frames' and args.video == 'native': direct = 'qwen'
         if args.limit is not None and (args.limit < 1 or args.command != 'run'):
             raise ValueError('--limit must be positive and is used with run, not test or eval.')
         options = presets.defaults(name, args.video) if preset else dict(settings)
@@ -170,8 +190,10 @@ def main(argv=None):
             options.update({k: v for k, v in settings.items() if k not in ('model', 'api_key_file')})
         for key in ('max_tokens', 'concurrency', 'reasoning_effort', 'api_format'):
             if (value := getattr(args, key)) is not None: options[key] = value
-        endpoint = engine.native_video_api.vllm_endpoint(args.base_url or settings.get('base_url', engine.BASE_URL))
+        endpoint = (engine.native_video_api.endpoint(direct) if direct else
+                    engine.native_video_api.vllm_endpoint(args.base_url or settings.get('base_url', engine.BASE_URL)))
         delivery = options.get('video_delivery', 'ordered-images')
+        if direct: delivery = 'video-frames' if direct == 'qwen-frames' else 'ordered-images' if direct == 'claude' else 'native'
         if delivery not in engine.GATEWAY_VIDEO_DELIVERIES: raise ValueError('Unknown video delivery.')
         if preset and options.get('reasoning_effort'):
             allowed = {'astra': {'low','medium','high','xhigh','max'}, 'kimi': {'low','medium','high','max'},
@@ -189,10 +211,12 @@ def main(argv=None):
             raise ValueError('Messages requires ordered images, max_tokens and native effort settings.')
         tokens, workers = int(options.get('max_tokens', 4096)), int(options.get('concurrency', 1))
         if tokens <= 0 or not 1 <= workers <= 16: raise ValueError('Use positive max-tokens and concurrency 1–16.')
-        modes = ('video', 'static') if args.input == 'both' else (args.input,)
-        key = credential(settings, args.key_file) if args.command not in ('plan', 'eval', 'settings') else None
+        modes = (('static', 'video') if name == 'opus' else ('video', 'static')) if args.input == 'both' else (args.input,)
+        key = None
+        if args.command not in ('plan', 'eval', 'settings'):
+            key = credential(settings, args.key_file, direct=direct) if direct else credential(settings, args.key_file)
         model = args.model_id or (presets.resolve_model(name, presets.model_ids(endpoint, key))
-                                  if preset and key else preset['ids'][0] if preset else settings['model'])
+                                  if preset and key and not direct else preset['ids'][0] if preset else settings['model'])
         if not re.fullmatch(r'[A-Za-z0-9_.:/-]+', model): raise ValueError('Invalid exact model ID.')
         run_settings = dict(base_url=endpoint, model=model, video_delivery=delivery, max_tokens=tokens,
                             concurrency=workers, token_field=options.get('token_field', 'max_completion_tokens'),
@@ -202,12 +226,24 @@ def main(argv=None):
                             and thinking == preset.get('enable_thinking') else 'custom',
                             api_format=options.get('api_format', 'chat'),
                             dataset_revision=release.REVISION)
-        if preset and delivery == 'native' and preset.get('native_video_part'):
+        if direct:
+            run_settings.update(direct_provider=direct, requested_video_fps=engine.native_video_api.requested_fps(direct, model))
+        if direct == 'gemini':
+            run_settings.update(api_format='generateContent', token_field='maxOutputTokens', media_resolution='HIGH', video_processing='STATIC')
+        if direct == 'claude':
+            run_settings['image_transport'] = 'inline PNG or Anthropic Files API for larger requests'
+        if direct in {'qwen', 'qwen-frames'}:
+            run_settings['media_transport'] = 'inline or official 48-hour OSS references, unchanged bytes'
+        if not direct and preset and delivery == 'native' and preset.get('native_video_part'):
             run_settings['native_video_part'] = preset['native_video_part']
         if args.command == 'settings':
             fields = {'model': model, 'stream': False, run_settings['token_field']: tokens}
             if run_settings['reasoning_effort']:
-                if run_settings['api_format'] == 'messages':
+                if direct == 'gemini':
+                    fields = {'generationConfig': {'maxOutputTokens': tokens,
+                              'thinkingConfig': {'thinkingLevel': run_settings['reasoning_effort']},
+                              'mediaResolution': 'MEDIA_RESOLUTION_HIGH'}}
+                elif run_settings['api_format'] == 'messages':
                     fields['output_config'] = {'effort': run_settings['reasoning_effort']}
                 else:
                     fields['reasoning_effort'] = run_settings['reasoning_effort']
@@ -216,7 +252,8 @@ def main(argv=None):
             print(json.dumps(dict(
                 preset=name if preset else None, **run_settings, input_types=modes,
                 request_fields=fields,
-                model_route_status='not checked; resolved from account /models when running',
+                model_route_status=('fixed first-party model ID' if direct else
+                                    'not checked; resolved from account /models when running'),
                 video_source=dict(frames=180, fps=60, width=768, height=512,
                                   client_resize=False, client_crop=False, t5_reference_first=True),
                 prompt_policy='frozen task prompt; frame delivery adds the 180-frame/60 fps prefix; no history or examples',
@@ -239,7 +276,8 @@ def main(argv=None):
         print('Temperature / top-p / seed / thinking budget: not sent (provider defaults).')
         print(f"Inputs: {', '.join(modes)}. Full plan: 1,480 video + 1,346 distinct static calls.")
         if delivery == 'native' and 'video' in modes:
-            print('Native video: the server chooses frames; this run is separate from the 180-frame comparison.')
+            print(f'Original 60 fps MP4; requested server FPS: {run_settings.get("requested_video_fps") or "not exposed"}. '
+                  'This is separate from the all-180-frame and native-24fps-source comparisons.')
         if args.limit: print(f'Budget: at most {args.limit} new calls per selected input type.')
         if args.command != 'plan' and delivery in engine.GATEWAY_FRAME_DELIVERIES:
             try:
@@ -247,24 +285,42 @@ def main(argv=None):
                 import PIL
             except ImportError:
                 raise ValueError('Install the client first: python -m pip install -e .')
-        previous = {name: os.environ.get(name) for name in ('NVIDIA_API_KEY', 'VLM_API_BASE_URL')}
+        key_name = engine.native_video_api.HOSTED[direct][0] if direct else 'NVIDIA_API_KEY'
+        previous = {name: os.environ.get(name) for name in (key_name, 'VLM_API_BASE_URL')}
         os.environ['VLM_API_BASE_URL'] = endpoint
-        if key: os.environ['NVIDIA_API_KEY'] = key
+        if key: os.environ[key_name] = key
         try:
             prepared = []
             for mode in modes:
                 folder = out / mode
+                retry_pilots, retry_run = [], []
                 if args.command != 'plan' and (folder / 'attempts.sqlite3').exists():
                     with closing(engine.open_db(folder)) as db: history = engine.records(db)
                     finished = {'ANSWERED', 'FORMAT_OR_TOOL_FAILURE', 'TRUNCATED'}
-                    if any(a[-1]['status'] not in finished for a in history.values()):
-                        invoke(['export', '--out', str(folder)], mode)
-                        raise ValueError(f'An earlier request failed or may be in flight. Inspect {folder}/attempts.jsonl before retrying.')
-                common = ['--provider','nvidia','--model',model,'--input',mode,'--data-root',str(args.data_root),
-                          '--out',str(folder),'--max-tokens',str(tokens),'--concurrency',str(workers),
-                          '--token-field',run_settings['token_field']]
-                common += ['--api-format', run_settings['api_format']]
-                if mode == 'video': common += ['--video-delivery', delivery]
+                    for request_id, attempts in history.items():
+                        latest = attempts[-1]
+                        if latest['status'] in finished: continue
+                        safe = len(attempts) == 1 and (latest['status'] == 'SOURCE_ERROR' or
+                               (latest['status'] == 'HTTP_ERROR' and latest.get('http_status') == 429))
+                        if args.retry_failed and safe:
+                            if latest['phase'] == 'pilot':
+                                retry_pilots += ['--retry', request_id, '--pilot-trial', request_id]
+                            else:
+                                retry_run += ['--retry', request_id]
+                        else:
+                            invoke(['export', '--out', str(folder)], mode)
+                            hint = 'Repeat with --retry-failed after the source or rate-limit issue clears.' if safe else 'Send the return ZIP to Yang; this request is not safe to repeat automatically.'
+                            raise ValueError(f'Run paused. {hint} Evidence: {folder}/return.zip')
+                common = ['--provider', direct or 'nvidia',
+                          '--model',model,'--input',mode,'--data-root',str(args.data_root),
+                          '--out',str(folder),'--max-tokens',str(tokens),'--concurrency',str(workers)]
+                if direct == 'claude':
+                    common += ['--claude-files']
+                elif direct:
+                    common += ['--direct-panel']
+                else:
+                    common += ['--token-field',run_settings['token_field'], '--api-format',run_settings['api_format']]
+                    if mode == 'video': common += ['--video-delivery', delivery]
                 if mode == 'video' and run_settings.get('native_video_part'):
                     common += ['--native-video-part', run_settings['native_video_part']]
                 if run_settings['image_detail']: common += ['--image-detail', run_settings['image_detail']]
@@ -276,22 +332,33 @@ def main(argv=None):
                     continue
                 print(f'{mode}: checking / resuming pilots...', flush=True)
                 pilot_budget = min(10, args.limit) if args.limit else 10
-                _, pilot = invoke(['pilot', *common, '--max-requests', str(pilot_budget), '--execute'], mode)
+                pilots = []
+                if mode == 'video':
+                    _, rows = engine.load_plan(folder)
+                    heavy_samples = {'naf754934aea1949ac6c3a6de', 'n5p1_0db69699a4ad995d721bc342'}
+                    largest_t4 = 'T4_right_N16_coherence25_layout15_same_bg-photo_bg_031_objects-photo.mp4'
+                    for row in rows:
+                        if row['sample_id'] in heavy_samples or any(i['path'].endswith(largest_t4) for i in row['media']):
+                            pilots += ['--preferred-pilot', row['request_id']]
+                _, pilot = invoke(['pilot', *common, *pilots, *retry_pilots, '--max-requests', str(pilot_budget), '--execute'], mode)
                 invoke(['export', '--out', str(folder)], mode)
-                attempts = [json.loads(l) for l in (folder / 'attempts.jsonl').read_text().splitlines()]
-                if any(a['phase'] == 'pilot' and a['status'] != 'ANSWERED' for a in attempts):
-                    raise ValueError(f'Pilot failed or was truncated. Inspect {folder}/attempts.jsonl. No full batch was started.')
+                with closing(engine.open_db(folder)) as db: history = engine.records(db)
+                if failure := next((a[-1] for a in history.values() if a[-1]['phase'] == 'pilot' and a[-1]['status'] != 'ANSWERED'), None):
+                    detail = failure.get('source_error') or failure.get('http_status') or failure['status']
+                    request_id = failure.get('provider_request_id') or 'unavailable'
+                    raise ValueError(f'Pilot stopped ({detail}, provider request ID {request_id}). '
+                                     f'Send {folder}/return.zip to Yang. No full run started.')
                 if args.command == 'test':
                     if pilot.get('blocked_profiles'): raise ValueError(f'Pilot profiles are missing: {folder}')
                     continue
                 remaining = args.limit - pilot.get('started', 0) if args.limit else None
-                prepared.append((mode, folder, common, remaining))
+                prepared.append((mode, folder, common, remaining, retry_run))
             # Qualify both input types before spending the full-run budget on either.
-            for mode, folder, common, remaining in prepared:
+            for mode, folder, common, remaining, retry_run in prepared:
                 if remaining is not None and remaining <= 0: continue
                 budget = ['--max-requests', str(remaining)] if remaining is not None else ['--all-requests']
                 print(f'{mode}: running / resuming...', flush=True)
-                _, result = invoke(['evaluate', *common, *budget, '--execute'], mode)
+                _, result = invoke(['evaluate', *common, *retry_run, *budget, '--execute'], mode)
                 if result['status'] != 'COMPLETE':
                     with closing(engine.open_db(folder)) as db: history = engine.records(db)
                     failed = any(a[-1]['status'] not in {'ANSWERED','FORMAT_OR_TOOL_FAILURE','TRUNCATED'} for a in history.values())
@@ -300,7 +367,7 @@ def main(argv=None):
             if args.command == 'plan': return 0
             complete = evaluation(out, modes)
             if args.command == 'test':
-                print(f'Test passed. Run python run.py {name if preset else ""} with the same options to finish.')
+                print('Test passed. Remove "test" from this command to run the full selection.')
                 return 0
             if args.limit and not complete:
                 print('Call budget reached. This is a partial run; repeat the command to continue.')

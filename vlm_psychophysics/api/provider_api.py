@@ -1,4 +1,4 @@
-"""Model shortcuts and documented Chat Completions settings (2026-11-11)."""
+"""Model shortcuts and documented API settings (2026-11-13)."""
 
 import json
 import re
@@ -22,7 +22,8 @@ PRESETS = {
     'astra': dict(ids=('gpt-6-astra',), delivery='ordered-images', token_field='max_completion_tokens',
                   detail='original', reasoning='low', native=False,
                   reference='https://developers.openai.com/api/docs/models/gpt-6-astra'),
-    'opus': dict(ids=('claude-opus-5-5', 'claude-opus-5.5'), delivery='ordered-images',
+    'opus': dict(ids=('claude-opus-5-5', 'claude-opus-5.5', 'anthropic.claude-opus-5-5',
+                      'global.anthropic.claude-opus-5-5', 'us.anthropic.claude-opus-5-5'), delivery='ordered-images',
                  token_field='max_tokens', detail=None, reasoning='low', native=False,
                  api_format='messages',
                  reference='https://platform.claude.com/docs/en/models/opus-5-5/overview'),
@@ -44,11 +45,17 @@ PRESETS = {
     'gemini-argon': dict(ids=('gemini-4-argon',), delivery='ordered-images', token_field='max_tokens',
                          detail=None, reasoning='low', native=True, native_video_part='image_url',
                          reference='https://aistudio.google.com/docs/openai'),
+    'gemini-hydrogen': dict(ids=('gemini-4-hydrogen',), delivery='ordered-images', token_field='max_tokens',
+                            detail=None, reasoning='low', native=True, native_video_part='image_url',
+                            reference='https://aistudio.google.com/docs/models/gemini-4-hydrogen'),
 }
+DIRECT_PROVIDERS = {'opus': 'claude', 'kimi': 'kimi', 'qwen': 'qwen-frames',
+                    'qwen-flash': 'qwen-frames', **{n: 'gemini' for n in PRESETS if n.startswith('gemini-')}}
 ALIASES = {'astral': 'astra', 'gpt-6-astra': 'astra', 'opus5.5': 'opus', 'opus-5.5': 'opus', 'claude-opus-5-5': 'opus',
            'kimi-k3.1-pro': 'kimi', 'qwen3.8-max': 'qwen', 'qwen3.8-flash': 'qwen-flash',
            'gemini-4-carbon': 'gemini-carbon', 'gemini-4-argon': 'gemini-argon',
            'gemini-3.8-flash': 'gemini-flash'}
+ALIASES['gemini-4-hydrogen'] = 'gemini-hydrogen'
 
 
 def preset_name(value):

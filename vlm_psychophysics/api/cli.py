@@ -181,17 +181,19 @@ def configured(
     out, plan, model, max_tokens, provider=PROVIDER, all_frames=False,
     generation_parameters=None, preset=None,
     *, video_delivery=None, image_detail=None, token_field=None, api_format=None, native_video_part=None,
+    claude_files=False, direct_panel=False,
 ):
     release.require(
         bool(model) and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]+", model)),
         "Set --model to the exact provider model ID",
     )
     hosted = native_video_api.HOSTED.get(provider)
-    endpoint = native_video_api.vllm_endpoint(os.environ.get("VLM_API_BASE_URL", BASE_URL))
     if hosted:
         endpoint = native_video_api.endpoint(provider)
     elif provider == "vllm":
         endpoint = native_video_api.vllm_endpoint(os.environ.get("VLLM_BASE_URL", ""))
+    else:
+        endpoint = native_video_api.vllm_endpoint(os.environ.get("VLM_API_BASE_URL", BASE_URL))
     config = dict(
         schema=SCHEMA,
         provider=provider,
@@ -286,6 +288,21 @@ def configured(
         )
     if config.get("api_format") == "messages":
         config["transport"] = "native Anthropic Messages with inline lossless PNG images"
+    if claude_files:
+        config.update(
+            claude_files=True,
+            transport="Anthropic Messages, lossless PNG inline or by Files API reference",
+            video_prompt_prefix=ORDERED_IMAGE_VIDEO_PROMPT_PREFIX,
+            processor_visibility="client verifies the submitted frames; server processor is unobserved",
+        )
+    if direct_panel:
+        config.update(direct_panel=True, pilot_admission='completion_envelope',
+                      processor_visibility='client media verified; server processor unobserved')
+        if provider == 'qwen-frames':
+            config['video_prompt_prefix'] = ORDERED_IMAGE_VIDEO_PROMPT_PREFIX
+            config['transport'] = 'all 180 lossless PNGs, inline or temporary OSS references'
+        elif provider == 'qwen':
+            config['transport'] = 'original MP4, inline or temporary OSS reference; requested 10 fps'
     path = out / "config.json"
     if path.exists():
         release.require(
@@ -478,7 +495,11 @@ def transport(payload, credential, config=None):
         auth = {"Authorization": "Bearer " + credential}
         if project := os.environ.get("OPENAI_PROJECT_ID"):
             auth["OpenAI-Project"] = project
-    elif config and (config["provider"] == "claude" or config.get("api_format") == "messages"):
+    elif config and config["provider"] == "claude":
+        endpoint += "/messages"
+        timeout = 600
+        auth = native_video_api.claude_headers(credential)
+    elif config and config.get("api_format") == "messages":
         endpoint += "/messages"
         timeout = 600
         auth = {
@@ -490,6 +511,8 @@ def transport(payload, credential, config=None):
     else:
         endpoint += "/chat/completions"
         auth = {"Authorization": "Bearer " + credential}
+        if config and config.get('direct_panel') and config['provider'] in {'qwen', 'qwen-frames'}:
+            auth['X-DashScope-OssResourceResolve'] = 'enable'
     request = Request(
         endpoint,
         data=payload,
@@ -629,6 +652,8 @@ def request_body(row, config, media_root, *, download_missing=False):
             media,
             config["max_completion_tokens"],
             config["video_fps"],
+            panel=config.get('direct_panel', False),
+            generation=generation if config.get('direct_panel') else None,
         )
     else:
         parts = []
@@ -657,12 +682,13 @@ def request_body(row, config, media_root, *, download_missing=False):
         }
         if not gateway_frames:
             body.update(config.get("frame_settings", {}))
-    if provider not in native_video_api.FRAME_LISTS:
+    if provider not in native_video_api.FRAME_LISTS and not config.get('direct_panel'):
         body.update(generation)
     if config.get("api_format") == "messages":
         body = messages_body(body)
     payload = release.encoded(body)
-    native_video_api.validate_payload_size(provider, config.get("endpoint"), len(payload))
+    if not config.get("claude_files") and not (config.get('direct_panel') and provider in {'qwen', 'qwen-frames'}):
+        native_video_api.validate_payload_size(provider, config.get("endpoint"), len(payload))
     return payload, verified
 
 
@@ -673,6 +699,21 @@ def invoke(out, receipt, row, config, media_root, credential, expected_model, do
             payload, verified = request_body(
                 row, config, media_root, download_missing=download_missing
             )
+            if config.get("claude_files"):
+                if len(payload) > native_video_api.CLAUDE_INLINE_LIMIT:
+                    receipt["inline_request_bytes"] = len(payload)
+                    body = json.loads(payload)
+                    receipt["claude_file_images"] = native_video_api.claude_file_parts(body, credential)
+                    payload = release.encoded(body)
+                native_video_api.validate_payload_size("claude", config["endpoint"], len(payload))
+            if config.get('direct_panel') and config['provider'] in {'qwen', 'qwen-frames'}:
+                body = json.loads(payload)
+                # Below both the 16 MiB request and 10 MB per-media limits after upload.
+                if len(payload) >= 9_000_000:
+                    receipt['inline_request_bytes'] = len(payload)
+                    receipt['qwen_file_parts'] = native_video_api.qwen_file_parts(body, config, credential)
+                    payload = release.encoded(body)
+                native_video_api.validate_payload_size('qwen-frames', config['endpoint'], len(payload))
         except Exception as error:
             # Exception messages from network clients can contain signed URLs.
             receipt.update(
@@ -717,7 +758,7 @@ def invoke(out, receipt, row, config, media_root, credential, expected_model, do
                 config["provider"] == "gemini"
                 and re.search(rb'"inline_?data"\s*:', raw, re.IGNORECASE)
             ) or (
-                config["provider"] == "claude"
+                (config["provider"] == "claude" or config.get("api_format") == "messages")
                 and re.search(rb'\\?"type\\?"\s*:\s*\\?"base64\\?"', raw, re.IGNORECASE)
             ):
                 receipt.update(
@@ -813,6 +854,8 @@ def execution(out, plan, rows, args, pilot):
     )
     hosted = native_video_api.HOSTED.get(args.provider)
     gateway_frames = getattr(args, "video_delivery", None) in GATEWAY_FRAME_DELIVERIES
+    claude_files = getattr(args, "claude_files", False)
+    direct_panel = getattr(args, 'direct_panel', False)
     if args.all_frames:
         release.require(
             not hosted or args.provider in native_video_api.FRAME_LISTS,
@@ -846,7 +889,7 @@ def execution(out, plan, rows, args, pilot):
             all(
                 r["source"] == "public"
                 and all(i["mime"] in {"image/png", "video/mp4"} for i in r["media"])
-                and (r["input"] == "static" or args.all_frames or gateway_frames)
+                and (r["input"] == "static" or args.all_frames or gateway_frames or claude_files or direct_panel)
                 for r in selected.values()
             ),
             "Select public MP4 and PNG inputs for the ordered image route",
@@ -855,9 +898,8 @@ def execution(out, plan, rows, args, pilot):
         release.require(
             all(
                 r["source"] == "public"
-                and r["input"] == "video"
-                and len(r["media"]) == 1
-                and r["media"][0]["mime"] in hosted[2]
+                and ((direct_panel and all(i['mime'] in hosted[2] | {'image/png'} for i in r['media']))
+                     or (r["input"] == "video" and len(r["media"]) == 1 and r["media"][0]["mime"] in hosted[2]))
                 for r in selected.values()
             ),
             "Select supported public single-video scopes with --scope and --input video",
@@ -870,6 +912,8 @@ def execution(out, plan, rows, args, pilot):
         token_field=getattr(args, "token_field", None),
         api_format=getattr(args, "api_format", None),
         native_video_part=getattr(args, 'native_video_part', None),
+        claude_files=claude_files,
+        direct_panel=direct_panel,
     )
     with closing(open_db(out)) as db:
         history = records(db)
@@ -892,17 +936,24 @@ def execution(out, plan, rows, args, pilot):
         blocked = sorted(profiles.keys() - admitted.keys())
         if pilot:
             overrides = {}
+            for key in getattr(args, "preferred_pilot", []):
+                release.require(key in selected, f"Unknown built-in pilot {key}")
+                profile = selected[key]["profile"]
+                if profile in blocked and key not in history:
+                    overrides[profile] = key
+            explicit_profiles = set()
             for key in args.pilot_trial or []:
                 release.require(
-                    key in selected and key not in history,
+                    key in selected and (key not in history or key in (args.retry or [])),
                     f"Pilot trial {key} is unknown or already asked",
                 )
                 profile = selected[key]["profile"]
                 release.require(
-                    profile in blocked and profile not in overrides,
+                    profile in blocked and profile not in explicit_profiles,
                     f"Pilot profile {profile} is already admitted or has two overrides",
                 )
                 overrides[profile] = key
+                explicit_profiles.add(profile)
             keys = [
                 overrides.get(profile, min(profiles[profile])) for profile in blocked
             ]
@@ -1298,7 +1349,9 @@ def verify(archive, *, with_history=False):
                 )
             if "video_prompt_prefix" in config:
                 release.require(
-                    (gateway_frames or (provider in native_video_api.ORDERED_IMAGES and "frame_settings" in config))
+                    (gateway_frames or (provider in native_video_api.ORDERED_IMAGES and "frame_settings" in config)
+                     or (provider == "claude" and config.get("claude_files") is True)
+                     or (provider == 'qwen-frames' and config.get('direct_panel') is True))
                     and config["video_prompt_prefix"] == ORDERED_IMAGE_VIDEO_PROMPT_PREFIX,
                     "Unexpected video prompt prefix",
                 )
@@ -1357,6 +1410,21 @@ def verify(archive, *, with_history=False):
                         size = entry["request_bytes"]
                         release.require(type(size) is int and size > 0, "Invalid request size")
                         native_video_api.validate_payload_size(provider, (config or {}).get("endpoint"), size)
+                    if "claude_file_images" in entry:
+                        release.require(
+                            provider == "claude" and config.get("claude_files") is True
+                            and entry["inline_request_bytes"] > native_video_api.CLAUDE_INLINE_LIMIT
+                            and entry["claude_file_images"] == sum(
+                                media.get("ordered_frames", {}).get("count", 1) for media in verified
+                            ),
+                            "Invalid Claude file transport receipt",
+                        )
+                    if 'qwen_file_parts' in entry:
+                        release.require(provider in {'qwen', 'qwen-frames'} and config.get('direct_panel') is True
+                                        and entry['inline_request_bytes'] >= 9_000_000
+                                        and entry['qwen_file_parts'] == sum(
+                                            media.get('ordered_frames', {}).get('count', 1) for media in verified),
+                                        'Invalid Qwen temporary file receipt')
                     if provider in native_video_api.FRAME_LISTS or config.get("video_delivery") in GATEWAY_FRAME_DELIVERIES:
                         for actual in verified:
                             if actual["mime"] == "video/mp4":
@@ -1557,6 +1625,8 @@ def main(argv=None):
         help="NVIDIA Gateway output token field (default: max_completion_tokens).",
     )
     parser.add_argument("--api-format", choices=("chat", "messages"))
+    parser.add_argument("--claude-files", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument('--direct-panel', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--native-video-part', choices=('image_url', 'video_url'))
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--temperature", type=float)
@@ -1627,6 +1697,7 @@ def main(argv=None):
         action="append",
         help="Choose another previously unasked request ID for a blocked profile",
     )
+    parser.add_argument("--preferred-pilot", action="append", default=[], help=argparse.SUPPRESS)
     parser.add_argument(
         "--execute", action="store_true", help="Authorize real calls from this shell"
     )
@@ -1653,6 +1724,10 @@ def main(argv=None):
             parser.error("Unknown model route. Set --provider explicitly for this model.")
         args.provider = auto_provider or PROVIDER
     args.model = args.model or os.environ.get("VLM_API_MODEL")
+    if args.claude_files and (args.provider != "claude" or args.all_frames):
+        parser.error("Claude file transport uses first-party Messages with client-verified frames.")
+    if args.direct_panel and (args.provider not in {'gemini', 'kimi', 'qwen', 'qwen-frames'} or args.all_frames):
+        parser.error('Direct panel requires a supported hosted route without server-frame-report admission.')
     if args.preset and not args.model and args.command != "plan":
         parser.error("Set --model or NVIDIA_VIDEO_MODEL_ID to the exact served model ID.")
     if any((args.video_delivery, args.image_detail, args.token_field)) and (
@@ -1699,6 +1774,14 @@ def main(argv=None):
             generation["reasoning"] = {"effort": args.reasoning_effort or "medium"}
             if args.reasoning_mode:
                 generation["reasoning"]["mode"] = args.reasoning_mode
+        elif args.provider == "claude" and args.claude_files and args.reasoning_effort and not args.reasoning_mode:
+            generation["output_config"] = {"effort": args.reasoning_effort}
+        elif args.direct_panel and args.provider in {'gemini', 'kimi'} and not args.reasoning_mode:
+            if args.provider == 'gemini':
+                generation.update(thinkingConfig={'thinkingLevel': args.reasoning_effort},
+                                  mediaResolution='MEDIA_RESOLUTION_HIGH')
+            else:
+                generation['reasoning_effort'] = args.reasoning_effort
         else:
             parser.error("Use --reasoning-effort with Astra or NVIDIA Gateway; --reasoning-mode requires Astra.")
     args.generation_parameters = generation
@@ -1721,7 +1804,7 @@ def main(argv=None):
         ):
             parser.error("Index selection requires one public --task and one modality, without --sample")
         args.index_bounds = (args.from_index, args.to_index)
-    if args.provider != PROVIDER and (
+    if args.provider != PROVIDER and not args.claude_files and not args.direct_panel and (
         args.task or args.data_root or auto_provider or args.provider in native_video_api.FRAME_LISTS
     ):
         args.all_frames = args.all_frames or (

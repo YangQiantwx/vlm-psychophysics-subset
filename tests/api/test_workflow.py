@@ -1,5 +1,8 @@
 """Exercise the public two-command workflow through saved plans and HTTP requests."""
 from io import BytesIO
+import base64
+from email import policy
+from email.parser import BytesParser
 import csv
 import json
 import os
@@ -274,10 +277,11 @@ def test_concurrency_change_reuses_saved_answers(workflow, monkeypatch):
 
 def test_model_resolution_is_exact_and_does_not_substitute(monkeypatch):
     assert cli.presets.resolve_model('opus', ['a/claude-opus-5-5']) == 'a/claude-opus-5-5'
+    assert cli.presets.resolve_model('opus', ['aws/global.anthropic.claude-opus-5-5']) == 'aws/global.anthropic.claude-opus-5-5'
     assert cli.presets.resolve_model('gemini-carbon', ['google/gemini-4-carbon', 'google/gemini-4-argon']) == 'google/gemini-4-carbon'
     assert cli.presets.preset_name('gemini-4-argon') == 'gemini-argon'
     assert {n for n in cli.presets.PRESETS if n.startswith('gemini')} == {
-        'gemini-carbon', 'gemini-argon', 'gemini-flash'}
+        'gemini-carbon', 'gemini-argon', 'gemini-flash', 'gemini-hydrogen'}
     assert cli.presets.preset_name('gemini') not in cli.presets.PRESETS
     with pytest.raises(ValueError, match='not found'):
         cli.presets.resolve_model('gemini-carbon', ['google/gemini-4-argon'])
@@ -298,6 +302,73 @@ def test_model_resolution_is_exact_and_does_not_substitute(monkeypatch):
     monkeypatch.setattr(cli.presets, 'build_opener', lambda *handlers: SimpleNamespace(open=open_request))
     assert cli.presets.model_ids('https://company.example/v1', 'private-credential') == ['a/gpt-6-astra']
     assert len(requests) == 1
+
+
+def test_first_party_opus_files_preserve_order_and_resume(workflow, monkeypatch):
+    w = workflow
+    native = engine.native_video_api
+    frames = [b'a' * 240, b'b' * 240, b'a' * 240] * 60
+    urls = ['data:image/png;base64,' + base64.b64encode(frame).decode() for frame in frames]
+    monkeypatch.setattr(native, 'ordered_pngs', lambda *_args, **_kwargs: (urls, 'f' * 64))
+    monkeypatch.setattr(native, 'CLAUDE_INLINE_LIMIT', 50_000)
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: pytest.fail('Called gateway /models'))
+    files, requests = {}, []
+
+    def upload(data, digest, key):
+        assert digest == catalog.sha(data) and key == 'private-test-credential'
+        files['file_' + digest] = data
+        return 'file_' + digest
+
+    def post(payload, key, config):
+        assert key == 'private-test-credential' and config['endpoint'] == native.CLAUDE
+        body = json.loads(payload)
+        assert body['model'] == 'claude-opus-5-5' and body['output_config'] == {'effort': 'low'}
+        parts = body['messages'][0]['content']
+        is_t5 = parts[-1]['text'].endswith('Match the target.')
+        images = [files[p['source']['file_id']] for p in parts[:-1]]
+        if is_t5:
+            assert images[0].endswith(b'/t5 still 0')
+        assert images[int(is_t5):] == frames
+        assert b'private-test-credential' not in payload
+        requests.append(body)
+        response = dict(id='fixture', model='claude-opus-5-5', stop_reason='end_turn',
+                        content=[dict(type='text', text='YES' if is_t5 else 'LEFT')])
+        return 200, {}, json.dumps(response).encode()
+
+    monkeypatch.setattr(native, 'upload_claude_png', upload)
+    monkeypatch.setattr(engine, 'transport', post)
+    args = ['opus', *w.args, '--anthropic', '--input', 'video']
+    assert cli.main(['test', *args]) == 0 and len(requests) == 10
+    assert cli.main(['test', *args]) == 0 and len(requests) == 10
+    archive = w.out / 'video/return.zip'
+    assert engine.verify(archive)['request_attempts'] == 10
+    assert cli.main(args) == 0 and len(requests) == 20
+    assert engine.verify(archive)['request_attempts'] == 20
+
+
+def test_anthropic_file_upload_preserves_bytes_and_sets_expiry(monkeypatch):
+    native = engine.native_video_api
+    png = b'original PNG bytes\r\n\x00'
+    digest = catalog.sha(png)
+
+    def post(request, timeout):
+        assert request.full_url == native.CLAUDE + '/files'
+        assert request.get_header('Authorization') == 'Bearer fixture-key'
+        assert request.get_header('Anthropic-version') == native.CLAUDE_API_VERSION
+        header = request.get_header('Content-type')
+        payload = BytesParser(policy=policy.default).parsebytes(
+            f'Content-Type: {header}\r\n\r\n'.encode() + request.data
+        )
+        file, expiry = list(payload.iter_parts())
+        assert file.get_filename() == f'{digest}.png'
+        assert file.get_content_type() == 'image/png' and file.get_payload(decode=True) == png
+        assert expiry.get_param('name', header='content-disposition') == 'expires_in_seconds'
+        assert int(expiry.get_content()) == native.CLAUDE_FILE_EXPIRY_SECONDS
+        return BytesIO(json.dumps(dict(id='file_fixture', mime_type='image/png',
+                                       size_bytes=len(png), expires_at='2026-11-20T00:00:00Z')).encode())
+
+    monkeypatch.setattr(native, 'build_opener', lambda *_: SimpleNamespace(open=post))
+    assert native.upload_claude_png(png, digest, 'fixture-key') == 'file_fixture'
 
 
 @pytest.mark.parametrize('name', list(cli.presets.PRESETS))
@@ -360,3 +431,185 @@ def test_minimum_thinking_rejection_never_falls_back(workflow, monkeypatch, name
     assert len(requests) == 1
     attempt = json.loads((w.out / 'static/attempts.jsonl').read_text())
     assert attempt['status'] == 'HTTP_ERROR'
+
+
+@pytest.mark.parametrize('name', ['gemini-argon', 'gemini-carbon', 'gemini-hydrogen', 'gemini-flash', 'kimi'])
+def test_direct_native_t5_static_resume_and_archive(workflow, monkeypatch, name):
+    w = workflow
+    native = engine.native_video_api
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: pytest.fail('Called company route'))
+    sent = []
+
+    def post(payload, key, config):
+        assert key == 'private-test-credential'
+        body = json.loads(payload)
+        if name.startswith('gemini'):
+            assert config['endpoint'] == native.GEMINI
+            assert set(body) == {'contents', 'generationConfig'}
+            assert body['generationConfig'] == {'maxOutputTokens': 4096,
+                'thinkingConfig': {'thinkingLevel': 'low'}, 'mediaResolution': 'MEDIA_RESOLUTION_HIGH'}
+            parts = body['contents'][0]['parts']
+            media = [base64.b64decode(p['inlineData']['data']) for p in parts[:-1]]
+            for p in parts[:-1]:
+                if p['inlineData']['mimeType'] == 'video/mp4':
+                    assert p['videoMetadata'] == {'fps': 24} and p['mediaProcessing'] == 'STATIC'
+            is_t5 = parts[-1]['text'] == 'Match the target.'
+            response = {'modelVersion': name, 'candidates': [{'content': {'parts': [{'text': 'YES' if is_t5 else 'LEFT'}]}, 'finishReason': 'STOP'}]}
+        else:
+            assert config['endpoint'] == native.KIMI and config['video_fps'] is None
+            assert body['reasoning_effort'] == 'low' and body['model'] == 'kimi-k3.1-pro'
+            parts = body['messages'][0]['content']
+            media = [base64.b64decode(p[p['type']]['url'].split(',', 1)[1]) for p in parts[:-1]]
+            assert all('fps' not in p for p in parts)
+            is_t5 = parts[-1]['text'] == 'Match the target.'
+            response = {'model': 'kimi-k3.1-pro', 'choices': [{'finish_reason': 'stop', 'message': {'content': 'YES' if is_t5 else 'LEFT'}}]}
+        if is_t5: assert b'/t5 still 0' in media[0]
+        assert b'private-test-credential' not in payload and b'GT_' not in payload
+        sent.append(media)
+        return 200, {}, json.dumps(response).encode()
+
+    monkeypatch.setattr(engine, 'transport', post)
+    args = [name, '--direct', *w.args]
+    assert cli.main(['test', *args]) == 0 and len(sent) == 20
+    assert cli.main(args) == 0 and len(sent) == 30
+    assert cli.main(args) == 0 and len(sent) == 30
+    assert engine.verify(w.out / 'video/return.zip')['request_attempts'] == 20
+    assert engine.verify(w.out / 'static/return.zip')['request_attempts'] == 10
+
+
+@pytest.mark.parametrize('name', ['qwen', 'qwen-flash'])
+def test_direct_qwen_upload_preserves_all_frames_and_reference(workflow, monkeypatch, name):
+    w = workflow
+    native = engine.native_video_api
+    frames = [b'a' * 40_000, b'b' * 40_000, b'a' * 40_000] * 60
+    urls = ['data:image/png;base64,' + base64.b64encode(f).decode() for f in frames]
+    monkeypatch.setattr(native, 'ordered_pngs', lambda *_a, **_kw: (urls, 'f' * 64))
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: pytest.fail('Called company route'))
+    files, sent = {}, []
+
+    def upload(data, mime, config, key):
+        assert key == 'private-test-credential' and mime == 'image/png'
+        uri = 'oss://fixture/' + catalog.sha(data) + '.png'
+        files[uri] = data
+        return uri
+
+    def post(payload, key, config):
+        body = json.loads(payload)
+        assert config['provider'] == 'qwen-frames'
+        assert body['enable_thinking'] is False and body['max_tokens'] == 4096
+        parts = body['messages'][0]['content']
+        video = next(p for p in parts if p['type'] == 'video')
+        assert 'fps' not in video  # Qwen3.8 does not document frame-array timing.
+        assert [files[url] for url in video['video']] == frames
+        assert video['min_pixels'] == video['max_pixels'] == 768 * 512
+        assert video['total_pixels'] == 180 * 768 * 512
+        is_t5 = parts[-1]['text'].endswith('Match the target.')
+        if is_t5: assert files[parts[0]['image_url']['url']].endswith(b'/t5 still 0')
+        assert len(payload) < 50_000
+        sent.append(payload)
+        return 200, {}, json.dumps({'model': config['requested_model'], 'choices': [{'finish_reason': 'stop',
+            'message': {'content': 'YES' if is_t5 else 'LEFT'}}]}).encode()
+
+    monkeypatch.setattr(native, 'upload_qwen_media', upload)
+    monkeypatch.setattr(engine, 'transport', post)
+    args = [name, '--direct', '--input', 'video', *w.args]
+    assert cli.main(['test', *args]) == 0 and len(sent) == 10
+    assert cli.main(args) == 0 and len(sent) == 20
+    assert cli.main(args) == 0 and len(sent) == 20
+    assert engine.verify(w.out / 'video/return.zip')['request_attempts'] == 20
+
+
+def test_qwen_multipart_upload_sends_exact_bytes_and_no_api_key_to_oss(monkeypatch):
+    native = engine.native_video_api
+    data = b'original media bytes\x00\r\n'
+    requests = []
+    upload_policy = dict(upload_host='https://dashscope-file-fixture.oss-ap-southeast-1.aliyuncs.com',
+                         upload_dir='dashscope-instant/fixture', max_file_size_mb=100,
+                         oss_access_key_id='temporary-id', signature='signature', policy='policy',
+                         x_oss_object_acl='private', x_oss_forbid_overwrite='true')
+
+    def post(req, timeout):
+        requests.append(req)
+        if len(requests) == 1:
+            assert req.full_url == 'https://dashscope-intl.aliyuncs.com/api/v1/uploads?action=getPolicy&model=qwen3.8-max-0902'
+            assert req.get_header('Authorization') == 'Bearer fixture-key'
+            return BytesIO(json.dumps({'data': upload_policy}).encode())
+        assert req.get_header('Authorization') is None
+        tree = BytesParser(policy=policy.default).parsebytes(
+            f'Content-Type: {req.get_header("Content-type")}\r\n\r\n'.encode() + req.data)
+        parts = list(tree.iter_parts())
+        assert parts[-1].get_payload(decode=True) == data
+        assert parts[-1].get_filename() == catalog.sha(data) + '.mp4'
+        fields = {p.get_param('name', header='content-disposition'): p.get_content().strip() for p in parts[:-1]}
+        assert fields['x-oss-object-acl'] == 'private' and fields['success_action_status'] == '200'
+        assert b'fixture-key' not in req.data
+        response = BytesIO(b'')
+        response.status = 200
+        return response
+
+    monkeypatch.setattr(native, 'build_opener', lambda *_: SimpleNamespace(open=post))
+    uri = native.upload_qwen_media(data, 'video/mp4', {'endpoint': native.QWEN, 'requested_model': 'qwen3.8-max-0902'}, 'fixture-key')
+    assert uri.startswith('oss://dashscope-instant/fixture/') and uri.endswith(catalog.sha(data) + '.mp4')
+    assert len(requests) == 2
+
+
+def test_explicit_retry_429_resumes_without_repeating_answers(workflow, monkeypatch):
+    w = workflow
+    original = engine.transport
+    calls = []
+
+    def transport(payload, key, config):
+        calls.append(payload)
+        if len(calls) == 1: return 429, {'retry-after': '1'}, b'{"error":{"message":"rate limited"}}'
+        return original(payload, key, config)
+
+    monkeypatch.setattr(engine, 'transport', transport)
+    assert cli.main(['test', *w.args]) == 2
+    assert len(calls) == 1
+    assert cli.main(['test', *w.args, '--retry-failed']) == 0
+    assert len(calls) == 21
+    assert cli.main([*w.args]) == 0
+    assert len(calls) == 31
+    assert cli.main([*w.args, '--retry-failed']) == 0
+    assert len(calls) == 31
+    assert engine.verify(w.out / 'video/return.zip')['request_attempts'] == 21
+
+
+def test_direct_qwen_native_large_video_upload_and_static(workflow, monkeypatch):
+    w = workflow
+    native = engine.native_video_api
+    uploads, sent = {}, []
+    for path in w.root.rglob('*.mp4'):
+        path.write_bytes(b'v' * 7_600_000)
+    # Rebind the fixture hashes to the exact expanded files.
+    original_plan = catalog.public_plan
+    def plan(root, scopes, mode, **kwargs):
+        rows = original_plan(root, scopes, mode, **kwargs)
+        for row in rows:
+            for item in row['media']:
+                item['sha256'] = catalog.sha((w.root / item['path']).read_bytes())
+        return rows
+    monkeypatch.setattr(catalog, 'public_plan', plan)
+    def upload(data, mime, config, key):
+        uri = 'oss://fixture/' + catalog.sha(data)
+        uploads[uri] = data
+        return uri
+    def post(payload, key, config):
+        body = json.loads(payload)
+        parts = body['messages'][0]['content']
+        is_t5 = parts[-1]['text'] == 'Match the target.'
+        assert body['enable_thinking'] is False
+        for part in parts[:-1]:
+            assert part['min_pixels'] == part['max_pixels'] == 768 * 512
+            if part['type'] == 'video_url':
+                assert part['fps'] == 10
+                assert uploads[part['video_url']['url']] == b'v' * 7_600_000
+        sent.append(payload)
+        return 200, {}, json.dumps({'model': 'qwen3.8-max-0902', 'choices': [{'finish_reason': 'stop',
+            'message': {'content': 'YES' if is_t5 else 'LEFT'}}]}).encode()
+    monkeypatch.setattr(native, 'upload_qwen_media', upload)
+    monkeypatch.setattr(engine, 'transport', post)
+    args = ['qwen', '--direct', '--video', 'native', *w.args]
+    assert cli.main(['test', *args]) == 0 and len(sent) == 20
+    assert engine.verify(w.out / 'video/return.zip')['request_attempts'] == 10
+    assert engine.verify(w.out / 'static/return.zip')['request_attempts'] == 10
