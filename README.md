@@ -1,8 +1,19 @@
 # Run the visual psychophysics benchmark
 
-**1,480 frozen videos. Five tasks, Classic and Natural.** Optional static comparison: 1,346 distinct calls on the same questions. The subset is 5.82% of the 25,440-video benchmark and matches the human study.
+**Choose a model and enter your NVIDIA company key. The runner handles the rest.**
 
-## Install or update
+## 1. Start the runner
+
+Already have the checkout used for Astra? Open a terminal in that folder and run:
+
+```bash
+git pull --ff-only
+python -m pip install -e .
+python run.py
+```
+
+<details>
+<summary>First time? Copy these commands instead</summary>
 
 Python 3.11+ on macOS or Linux:
 
@@ -10,13 +21,38 @@ Python 3.11+ on macOS or Linux:
 git clone https://github.com/YangQiantwx/vlm-psychophysics-subset.git
 cd vlm-psychophysics-subset
 python -m pip install -e .
+python run.py
 ```
 
-Already cloned? Run `git pull --ff-only` and `python -m pip install -e .`. Finish an active run before updating its checkout; the runner keeps different code/configurations separate.
+</details>
 
-Then run **`python run.py`** and choose a model from the menu. Paste the NVIDIA company key when prompted. The runner downloads what it needs, checks short pilots, continues the full selection, and packages the results. Repeating the same model command resumes saved work.
+## 2. Choose a model, then paste your key
 
-For Argon directly: **`python run.py argon`**. No settings file or provider-specific flags are needed.
+The requested comparisons are:
+
+| Model | Choose in the menu |
+|---|---|
+| Gemini 4 Argon | `gemini-argon` |
+| Claude Opus 5.5 | `opus` |
+| Qwen3.8 Max | `qwen` |
+| Kimi K3.1 Pro | `kimi` |
+
+Use the same NVIDIA **company key** as the Astra run. Key entry is hidden. No separate provider or Hugging Face account, manual downloads, image uploads or settings-file edits are needed. Run whichever models your access, quota and time allow.
+
+## 3. Let it run, then return the results
+
+The runner checks short pilots, then runs **1,480 videos + 1,346 distinct static comparisons** and packages the results automatically.
+
+- **Finished:** return `submission.zip` and `submission.zip.sha256` from the printed output folder.
+- **Stopped or interrupted:** run `python run.py` and select the same model to resume saved work.
+- **Error:** return the printed `support.zip` to Yang; no debugging is needed on your side.
+
+Finish an active run before updating the checkout. The initial pilots check account access and input support; saved answers are not requested again.
+
+---
+
+<details>
+<summary>Input details, optional models and advanced settings</summary>
 
 ## Choose a model
 
@@ -148,3 +184,5 @@ Data revision: `f562d61b4703b744c2f00f66a7ebabeacc4e0a0a`. Plans retain every qu
 <a id="regenerate-a-stimulus"></a>
 
 [Dataset](https://huggingface.co/datasets/DrQY/vlm-psychophysics-subset) · [Study archive](https://github.com/YangQiantwx/vlm-psychophysics-subset/tree/54b5b2a4ffda71317fc9f3500d524d1c53f8e52e)
+
+</details>
