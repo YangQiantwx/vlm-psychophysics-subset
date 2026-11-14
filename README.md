@@ -56,7 +56,15 @@ Available presets include:
 | Qwen3.8 Max | `qwen` |
 | Kimi K3.1 Pro | `kimi` |
 
-The runner reads a configured NVIDIA company key from a key file or environment variable. Otherwise, it prompts for the key with hidden input. Downloads and image preparation are automatic.
+**Where to enter the API key:** when the terminal displays `Paste your company API key (hidden, never saved):`, paste the NVIDIA company key and press Enter. Characters are hidden while typing or pasting. No key file is required, and the key is not saved in results.
+
+If a key is already stored in a text file containing only the key, use its path:
+
+```bash
+python run.py gemini-argon --key-file /path/to/key.txt
+```
+
+An existing `NVIDIA_API_KEY` environment variable or `api_key_file` path in `settings.json` is also read automatically; no prompt is shown when a key is already configured. Downloads and image preparation are automatic.
 
 The runner checks short pilots, then runs **1,480 videos + 1,346 distinct static comparisons** and packages the results automatically.
 
