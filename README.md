@@ -30,9 +30,30 @@ Start with **Gemini 4 Argon**, or **Carbon** for Google's strongest listed model
 | `gemini-flash` | `gemini-3.8-flash` | Optional previous-generation Flash |
 | `astra` | `gpt-6-astra` | Existing company-route comparison |
 
-## Run with the provider API
+## Use the NVIDIA company key
 
-These commands set the provider-specific input, reasoning and upload parameters. Paste the corresponding API key when prompted; it is hidden and never saved. Each `test` makes at most **10 video calls**, reused by the full run.
+**Start here if you already have a company key.** Use the same key and endpoint as the completed Astra run. The runner resolves the exact model from the account's catalog; no separate provider account is needed for this route. These commands prepare the company route; the short test checks actual account access and media acceptance.
+
+| Model | Company-key test | Input |
+|---|---|---|
+| Gemini Argon | `python run.py test gemini-argon --input video --video native` | Original MP4 + T5 reference |
+| Gemini Carbon | `python run.py test gemini-carbon --input video --video native` | Original MP4 + T5 reference |
+| Qwen Max | `python run.py test qwen --input video --video native` | Original MP4 + T5 reference |
+| Qwen Flash | `python run.py test qwen-flash --input video --video native` | Original MP4 + T5 reference |
+| Kimi Pro | `python run.py test kimi --input video --video native` | Original MP4 + T5 reference |
+| Claude Opus | `python run.py test opus --input static` | Prescribed 1–4 images; checks the Messages route |
+
+Paste the key when prompted, set `NVIDIA_API_KEY`, or use `--key-file /path/to/key.txt`. Each test makes at most 10 calls for the selected input type. After success, remove `test` and keep the other options. Repeat that command to resume. The existing Astra command preserves its 180-image path: `python run.py astra --input video`.
+
+**Company native-video sampling is not exposed by this client.** These runs preserve the source MP4 but do not claim an explicit 24 fps setting. Direct Gemini below is the prepared route for requesting 24 fps. The public NVIDIA Build service uses a different endpoint and catalog; a public Build key is not a replacement for the company key.
+
+**Opus company access and full-video transport are separate checks.** NVIDIA's [own example](https://github.com/NVIDIA/auto-ontology-eval/blob/main/README.md) uses company-key Opus 5.5, and its [Anthropic-client setup](https://docs.nvidia.com/cuml/26.12/developer_guide/agent_skill/index.html#using-inference-nvidia-com) targets the company endpoint. Full 180-image requests can reach about 270 MB in this subset; that large-input path has not passed an authenticated company-gateway test. Passing the static test does not admit a full-video run. URL-based lossless images are a candidate to test, not an implemented or verified workaround. The direct Anthropic Files route below is an available alternative, not a requirement for company-key Opus access.
+
+If a test stops, return the printed `return.zip` to the benchmark maintainer. It contains the error and request context; no script editing is needed. Return `submission.zip` and `submission.zip.sha256` after a completed run.
+
+## Optional: run with a provider account
+
+Use these commands when you have a separate provider account. They set provider-specific input, reasoning and upload parameters. Do not supply a company key to `--direct`: billing and authentication belong to the named provider. Paste the corresponding key when prompted; it is hidden and never saved. Each `test` makes at most **10 video calls**, reused by the full run.
 
 | Model | Test command | Key / account |
 |---|---|---|
@@ -52,23 +73,6 @@ python run.py gemini-argon --direct --input video
 Repeat the command to resume. To add the prescribed static comparison, use `--input static`; omit `--input` for both. Hydrogen and Gemini Flash use the same direct commands with their shortcuts. `--anthropic` remains an alias for the direct Opus route.
 
 Return **`submission.zip` and `submission.zip.sha256`** from the printed output directory. The package includes raw answers, input/configuration hashes, usage, scores and per-question results.
-
-## Use the NVIDIA company key
-
-The existing company-key workflow remains available. It resolves the exact model route from your account. Do not pass a company key to `--direct`: direct calls use a separate provider account and its billing.
-
-```bash
-python run.py test gemini-argon --input video --video native
-python run.py test kimi --input video --video native
-python run.py test qwen --input video --video native
-python run.py test opus --input static
-```
-
-Replace the shortcut with `gemini-carbon` or `qwen-flash` as needed. Remove `test` after success. The key can be pasted, read from `NVIDIA_API_KEY`, or supplied with `--key-file /path/to/key.txt`.
-
-**Company native-video sampling is not exposed by this client.** These runs are recorded separately from the controlled direct settings below. Use direct Gemini for an explicit 24 fps request. The existing company Astra command preserves its 180-image path: `python run.py astra --input video`.
-
-**For Opus's full 180-frame video comparison, use the Anthropic direct command above.** Large Natural clips exceed inline request limits. Its Files API resolves that without changing the images; an NVIDIA key does not grant Anthropic Files access. The company static command checks the Messages route using the original 1–4 images. Company availability and permissions are checked by the pilot, not assumed from public provider support.
 
 ## Recommended settings
 
