@@ -505,6 +505,50 @@ def test_interactive_model_menu_can_exit_without_requests(monkeypatch, capsys):
     assert 'gemini-argon' in capsys.readouterr().out
 
 
+def test_download_command_reuses_astra_data_and_repairs_invalid_cache(workflow, monkeypatch, capsys):
+    import huggingface_hub
+    w = workflow
+    rows = [*catalog.public_plan(None, None, 'video'), *catalog.public_plan(None, None, 'static')]
+    items = {m['path']:m for r in rows for m in r['media']}
+    original = {p:(w.root/p).read_bytes() for p in items}
+    paths = list(items)
+    (w.root/paths[0]).unlink()
+    (w.root/paths[1]).write_bytes(b'invalid cache')
+    monkeypatch.setattr(catalog, 'public_plan', lambda *a, **kw: rows)
+    monkeypatch.setattr(cli, 'credential', lambda *a, **kw: pytest.fail('Download asked for API key'))
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda *a: pytest.fail('Download called /models'))
+    downloads, repairs = [], []
+    def public_file(path, root=None):
+        downloads.append(path)
+        target=root/path;target.write_bytes(original[path]);return target
+    def repair(**kwargs):
+        assert kwargs['revision']==catalog.REVISION and kwargs['token'] is False and kwargs['force_download'] is True
+        path=kwargs['filename'];repairs.append(path)
+        target=kwargs['local_dir']/path;target.write_bytes(original[path]);return str(target)
+    monkeypatch.setattr(catalog, 'public_file', public_file)
+    monkeypatch.setattr(huggingface_hub, 'hf_hub_download', repair)
+    args=['download','--data-root',str(w.root)]
+    assert cli.main(args)==0 and downloads==[paths[0]] and repairs==[paths[1]]
+    assert cli.main(args)==0 and len(downloads)==len(repairs)==1
+    assert all((w.root/p).read_bytes()==data for p,data in original.items())
+    output=capsys.readouterr().out
+    assert 'Data ready. Next: python run.py' in output and 'cached' in output
+    assert not w.sent
+
+
+def test_download_failure_preserves_progress_and_returns_support(workflow, monkeypatch):
+    w=workflow
+    monkeypatch.chdir(w.root)
+    def fail(*a, **kw):raise RuntimeError('Hub temporarily unavailable')
+    monkeypatch.setattr(catalog,'public_plan',fail)
+    monkeypatch.setattr(cli,'credential',lambda *a, **kw:pytest.fail('Download asked for key'))
+    assert cli.main(['download'])==2
+    with ZipFile(w.root/'outputs/download-support/support.zip') as z:
+        report=json.loads(z.read('diagnostic.json'))
+    assert 'Hub temporarily unavailable' in report['error']
+    assert not w.sent
+
+
 @pytest.mark.parametrize('name', list(cli.presets.PRESETS))
 def test_every_default_menu_route_needs_only_company_key(workflow, monkeypatch, name):
     """Exercise the public menu through the real HTTP request builder, without billing."""

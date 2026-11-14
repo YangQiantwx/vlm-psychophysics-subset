@@ -2,14 +2,13 @@
 
 **Choose a model and enter your NVIDIA company key. The runner handles the rest.**
 
-## 1. Start the runner
+## 1. Get or update the code
 
 Already have the checkout used for Astra? Open a terminal in that folder and run:
 
 ```bash
 git pull --ff-only
 python -m pip install -e .
-python run.py
 ```
 
 <details>
@@ -21,12 +20,25 @@ Python 3.11+ on macOS or Linux:
 git clone https://github.com/YangQiantwx/vlm-psychophysics-subset.git
 cd vlm-psychophysics-subset
 python -m pip install -e .
-python run.py
 ```
 
 </details>
 
-## 2. Choose a model, then paste your key
+## 2. Download the data — skip if you already have it
+
+Already downloaded the dataset for Astra? **Skip to step 3.** Otherwise run:
+
+```bash
+python run.py download
+```
+
+This downloads the frozen video and static inputs into `dataset/`. It needs no API key. Running it again skips verified files and downloads only what is missing; interrupted downloads can be resumed with the same command.
+
+## 3. Run the script and choose a model
+
+```bash
+python run.py
+```
 
 The requested comparisons are:
 
@@ -37,9 +49,7 @@ The requested comparisons are:
 | Qwen3.8 Max | `qwen` |
 | Kimi K3.1 Pro | `kimi` |
 
-Use the same NVIDIA **company key** as the Astra run. Key entry is hidden. No separate provider or Hugging Face account, manual downloads, image uploads or settings-file edits are needed. Run whichever models your access, quota and time allow.
-
-## 3. Let it run, then return the results
+**Use your key exactly as you did for Astra.** Keep your existing key file or environment setting; the runner reads it automatically. If you entered the key at the prompt before, paste it at the hidden prompt again. No separate provider or Hugging Face account, image uploads or settings-file edits are needed. Run whichever models your access, quota and time allow.
 
 The runner checks short pilots, then runs **1,480 videos + 1,346 distinct static comparisons** and packages the results automatically.
 

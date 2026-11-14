@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing, redirect_stdout
 import csv
 import getpass
@@ -16,7 +17,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 from .api import cli as engine
 from .api import provider_api as presets
-from . import release
+from . import catalog, release
 
 
 class Progress:
@@ -68,6 +69,56 @@ def credential(settings, key_file, direct=False):
     if not key or any(ch.isspace() for ch in key):
         raise ValueError('Use a plain text key file containing only the API key, or paste the key.')
     return key
+
+
+def download_data(root, modality='both', workers=4):
+    """Prepare the frozen shared dataset; reuse verified files from the Astra run."""
+    if not 1 <= workers <= 16:
+        raise ValueError('Use download concurrency 1–16.')
+    root = root.expanduser()
+    print(f'Preparing data in {root.resolve()} (no API key needed)...', flush=True)
+    rows = catalog.public_plan(root, modality=None if modality == 'both' else modality,
+                               download_missing=True)
+    files = {}
+    for row in rows:
+        for item in row['media']:
+            if item['path'] in files:
+                catalog.require(files[item['path']]['sha256'] == item['sha256'], 'Conflicting source hashes')
+            files[item['path']] = item
+    print(f'Checking {len(files)} files; existing verified data will be skipped.', flush=True)
+
+    def prepare(item):
+        path = root / item['path']
+        if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == item['sha256']:
+            return 'cached'
+        if path.exists():
+            # Repair only an invalid file at a frozen public-dataset path.
+            catalog.require(not path.is_symlink(), f'Cached symlink differs from the frozen data: {path}')
+            from huggingface_hub import hf_hub_download
+            path = Path(hf_hub_download(repo_id=catalog.REPO, repo_type='dataset',
+                revision=catalog.REVISION, filename=item['path'], local_dir=root,
+                token=False, force_download=True))
+            status = 'repaired'
+        else:
+            path, status = catalog.public_file(item['path'], root), 'downloaded'
+        catalog.checked(path.read_bytes(), item['sha256'], item['path'])
+        return status
+
+    counts = dict(cached=0, downloaded=0, repaired=0)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        jobs = [pool.submit(prepare, item) for item in files.values()]
+        try:
+            for number, job in enumerate(as_completed(jobs), 1):
+                counts[job.result()] += 1
+                if number == 1 or number % 50 == 0 or number == len(jobs):
+                    print(f"Data: {number}/{len(jobs)} ready; {counts['cached']} cached, "
+                          f"{counts['downloaded']} downloaded, {counts['repaired']} repaired.", flush=True)
+        except Exception:
+            for job in jobs:
+                job.cancel()
+            raise
+    print('Data ready. Next: python run.py', flush=True)
+    return counts
 
 
 def evaluation(out, modes=None):
@@ -148,7 +199,7 @@ def main(argv=None):
             print('Choose a listed model number or name.')
     if argv[:1] == ['api']:
         return engine.main(argv[1:])
-    commands = ('run', 'test', 'eval', 'plan', 'models', 'settings')
+    commands = ('run', 'test', 'eval', 'plan', 'models', 'settings', 'download')
     if argv and not argv[0].startswith('-') and argv[0] not in commands:
         argv.insert(0, 'run')
     parser = argparse.ArgumentParser(description='Choose a model and run the frozen benchmark. No code edits needed.')
@@ -178,6 +229,15 @@ def main(argv=None):
     extra.add_argument('--reasoning-effort', choices=('minimal', 'low', 'medium', 'high', 'xhigh', 'max'))
     args = parser.parse_args(argv)
     try:
+        if args.command == 'download':
+            if args.model or args.limit:
+                raise ValueError('Use python run.py download; no model or call budget is needed.')
+            try:
+                download_data(args.data_root, args.input, args.concurrency if args.concurrency is not None else 4)
+            except Exception as error:
+                raise ValueError(f'Data preparation failed ({type(error).__name__}): {error}. '
+                                 'Saved files are kept; repeat the download command to resume.') from None
+            return 0
         if args.command == 'models':
             for name, p in presets.PRESETS.items():
                 print(f"{name:12} {p['ids'][0]:26} {p['delivery']}")
@@ -412,11 +472,12 @@ def main(argv=None):
         if locals().get('key'):
             message = message.replace(key, '[REDACTED]')
         print(f'ERROR: {message}', file=sys.stderr)
-        if args.command in {'run', 'test'} and 'endpoint' in locals():
-            folder = locals().get('out') or args.out or Path('outputs') / (re.sub(r'[^A-Za-z0-9_.-]', '-', name)+'-support')
+        if args.command in {'run', 'test', 'download'} and ('endpoint' in locals() or args.command == 'download'):
+            error_name = locals().get('name', args.command)
+            folder = locals().get('out') or args.out or Path('outputs') / (re.sub(r'[^A-Za-z0-9_.-]', '-', error_name)+'-support')
             folder.mkdir(parents=True, exist_ok=True)
             support = folder/'support.zip'
-            report = dict(schema='api-support-v1', endpoint=endpoint, model=locals().get('model', name),
+            report = dict(schema='api-support-v1', endpoint=locals().get('endpoint'), model=locals().get('model', error_name),
                           error=message, dataset_revision=release.REVISION)
             with ZipFile(support, 'w', ZIP_DEFLATED) as z:
                 z.writestr('diagnostic.json', json.dumps(report, indent=2))
