@@ -12,8 +12,7 @@ cd vlm-psychophysics-subset
 python -m pip install -e .
 ```
 
-<details>
-<summary>Update an existing installation</summary>
+### Update an existing installation
 
 Run from the repository folder:
 
@@ -21,8 +20,6 @@ Run from the repository folder:
 git pull --ff-only
 python -m pip install -e .
 ```
-
-</details>
 
 ## 2. Download the data
 
