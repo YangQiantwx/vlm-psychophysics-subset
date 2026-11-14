@@ -14,9 +14,16 @@ python -m pip install -e .
 
 Already cloned? Run `git pull --ff-only` and `python -m pip install -e .`. Finish an active run before updating its checkout; the runner keeps different code/configurations separate.
 
+Then run **`python run.py`** and choose a model from the menu. Paste the NVIDIA company key when prompted. The runner downloads what it needs, checks short pilots, continues the full selection, and packages the results. Repeating the same model command resumes saved work.
+
+For Argon directly: **`python run.py argon`**. No settings file or provider-specific flags are needed.
+
 ## Choose a model
 
 Start with **Gemini 4 Argon**, or **Carbon** for Google's strongest listed model. Qwen3.8 Max, Kimi K3.1 Pro and Claude Opus 5.5 provide the other requested comparisons. Flash and Hydrogen are optional, lower-cost candidates. No model is substituted automatically.
+
+<details>
+<summary>Exact model IDs and optional comparisons</summary>
 
 | Shortcut | Exact first-party model ID | Role |
 |---|---|---|
@@ -30,28 +37,43 @@ Start with **Gemini 4 Argon**, or **Carbon** for Google's strongest listed model
 | `gemini-flash` | `gemini-3.8-flash` | Optional previous-generation Flash |
 | `astra` | `gpt-6-astra` | Existing company-route comparison |
 
+</details>
+
 ## Use the NVIDIA company key
 
 **Start here if you already have a company key.** Use the same key and endpoint as the completed Astra run. The runner resolves the exact model from the account's catalog; no separate provider account is needed for this route. These commands prepare the company route; the short test checks actual account access and media acceptance.
 
-| Model | Company-key test | Input |
+| Model | One-command run | Video input |
 |---|---|---|
-| Gemini Argon | `python run.py test gemini-argon --input video --video native` | Original MP4 + T5 reference |
-| Gemini Carbon | `python run.py test gemini-carbon --input video --video native` | Original MP4 + T5 reference |
-| Qwen Max | `python run.py test qwen --input video --video native` | Original MP4 + T5 reference |
-| Qwen Flash | `python run.py test qwen-flash --input video --video native` | Original MP4 + T5 reference |
-| Kimi Pro | `python run.py test kimi --input video --video native` | Original MP4 + T5 reference |
-| Claude Opus | `python run.py test opus --input static` | Prescribed 1–4 images; checks the Messages route |
+| Gemini Argon | `python run.py gemini-argon` | Original MP4 + T5 reference |
+| Gemini Carbon | `python run.py gemini-carbon` | Original MP4 + T5 reference |
+| Qwen Max | `python run.py qwen` | All 180 lossless PNG URLs in a video array + reference |
+| Qwen Flash | `python run.py qwen-flash` | All 180 lossless PNG URLs in a video array + reference |
+| Kimi Pro | `python run.py kimi` | Original MP4 + T5 reference |
+| Claude Opus | `python run.py opus` | All 180 lossless PNG URLs + reference, Messages API |
+| Astra | `python run.py astra` | Existing 180-image route |
 
-Paste the key when prompted, set `NVIDIA_API_KEY`, or use `--key-file /path/to/key.txt`. Each test makes at most 10 calls for the selected input type. After success, remove `test` and keep the other options. Repeat that command to resume. The existing Astra command preserves its 180-image path: `python run.py astra --input video`.
+Paste the key when prompted, set `NVIDIA_API_KEY`, or use `--key-file /path/to/key.txt`. These commands run **1,480 video + 1,346 distinct static calls**, including pilots. Add `--input video` for video only, or `--input static` for static only. To stop after at most 10 pilot calls per input type, insert `test`: `python run.py test opus`. Pilot answers are reused by the full run.
 
 **Company native-video sampling is not exposed by this client.** These runs preserve the source MP4 but do not claim an explicit 24 fps setting. Direct Gemini below is the prepared route for requesting 24 fps. The public NVIDIA Build service uses a different endpoint and catalog; a public Build key is not a replacement for the company key.
 
-**Opus company access and full-video transport are separate checks.** NVIDIA's [own example](https://github.com/NVIDIA/auto-ontology-eval/blob/main/README.md) uses company-key Opus 5.5, and its [Anthropic-client setup](https://docs.nvidia.com/cuml/26.12/developer_guide/agent_skill/index.html#using-inference-nvidia-com) targets the company endpoint. Full 180-image requests can reach about 270 MB in this subset; that large-input path has not passed an authenticated company-gateway test. Passing the static test does not admit a full-video run. URL-based lossless images are a candidate to test, not an implemented or verified workaround. The direct Anthropic Files route below is an available alternative, not a requirement for company-key Opus access.
+**Opus and Qwen handle large image sequences automatically.** The runner reads a frozen HF image index and supplies public PNG download URLs; no HF account, hosting setup, manual upload or video decoding is needed on your computer. Every frame position is preserved, including repeated images. T5's reference comes first. Filenames are content hashes, with no answer labels. URLs resolve to HF's official CDN, are cached and refreshed before expiry, and are verified against the published PNG hashes. Small metadata requests are paced to respect HF's anonymous resolver limit.
 
-If a test stops, return the printed `return.zip` to the benchmark maintainer. It contains the error and request context; no script editing is needed. Return `submission.zip` and `submission.zip.sha256` after a completed run.
+HF hosting, pixel equality and request construction have been checked. NVIDIA's [own example](https://github.com/NVIDIA/auto-ontology-eval/blob/main/README.md) confirms company-key Opus 5.5 access; the runner's pilots check whether your particular gateway accepts the image URLs and full image count before continuing. No image is resized, converted to JPEG, or removed if the gateway rejects a request. The direct Anthropic Files route below remains optional.
+
+<details>
+<summary>Why image URLs preserve the input</summary>
+
+The API downloads PNGs with the same decoded RGB pixels as the inline frames. Video frames use lossless PNG compression; equality is checked pixel by pixel, independently of compression settings. Static and reference PNG bytes are retained exactly. URLs reduce the JSON request size, not image resolution or visual-token cost. All images remain 768 × 512; all 180 positions and the T5 reference are retained. A checked Natural T3 request drops from approximately 270 MB inline to 0.26 MB of download URLs. Opus receives `oversized_image: error`; the published dimensions are below its [documented native image limits](https://platform.claude.com/docs/en/build-with-claude/vision).
+
+</details>
+
+If a run stops, return the printed **`support.zip`** to the benchmark maintainer. It includes the error and saved return archives, without the API key; no script editing is needed. Return **`submission.zip` and `submission.zip.sha256`** after a completed run.
 
 ## Optional: run with a provider account
+
+<details>
+<summary>Separate Google, DashScope, Moonshot or Anthropic accounts</summary>
 
 Use these commands when you have a separate provider account. They set provider-specific input, reasoning and upload parameters. Do not supply a company key to `--direct`: billing and authentication belong to the named provider. Paste the corresponding key when prompted; it is hidden and never saved. Each `test` makes at most **10 video calls**, reused by the full run.
 
@@ -73,6 +95,8 @@ python run.py gemini-argon --direct --input video
 Repeat the command to resume. To add the prescribed static comparison, use `--input static`; omit `--input` for both. Hydrogen and Gemini Flash use the same direct commands with their shortcuts. `--anthropic` remains an alias for the direct Opus route.
 
 Return **`submission.zip` and `submission.zip.sha256`** from the printed output directory. The package includes raw answers, input/configuration hashes, usage, scores and per-question results.
+
+</details>
 
 ## Recommended settings
 
@@ -102,6 +126,7 @@ All models run one request at a time by default. Temperature, top-p and seed use
 | Recheck and package saved results offline | `python run.py eval --out outputs/YOUR-RUN` |
 | Run the prescribed static inputs | Replace `--input video` with `--input static` |
 | Override token cap or concurrency | `--max-tokens 4096 --concurrency 1` |
+| Explicit historical inline-image transport | `--image-transport inline` (company image routes only) |
 
 Pilots cover task × domain and include the large Natural T3 input, the largest Natural T4 MP4, and a Natural T5 double event with its reference. Invalid/truncated pilots stop before the full run. HTTP errors and timeouts save a `return.zip`; return that file to Yang rather than editing the script. Completed answers are never requested again. A timeout with unknown provider completion is not retried automatically.
 
@@ -112,7 +137,7 @@ Pilots cover task × domain and include the large Natural T3 input, the largest 
 <details>
 <summary>Validation and official specifications — checked November 13, 2026</summary>
 
-The release includes offline end-to-end tests for all presets, multipart uploads, T5 reference order, unmodified frame order/bytes, response scoring, rate-limit retry, resumption and ZIP verification. Real frozen T3, T4 and T5 media are also checked through request construction and lossless file-reference substitution. These are client validations; the account pilot supplies the first live provider acceptance. No paid provider calls were made during this release's local validation.
+The release includes offline end-to-end tests for all presets, multipart uploads, T5 reference order, unmodified frame order/pixels, response scoring, rate-limit retry, resumption and ZIP verification. Every menu default is exercised from model selection and key entry through HTTP request construction, packaging and resume. Real frozen T3, T4 and T5 media are also checked through request construction and lossless file-reference substitution. These are client validations; the account pilot supplies the first live provider acceptance. No paid provider calls were made during this release's local validation.
 
 Data revision: `f562d61b4703b744c2f00f66a7ebabeacc4e0a0a`. Plans retain every question and the original static-case deduplication. Raw responses, negative answers and failed attempts remain in the return package.
 

@@ -4,6 +4,7 @@ import json
 import re
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from .hf_images import trusted_download_url
 
 ROUTES = {
     "nvidia-internal": ("https://inference-api.nvidia.com/v1", "NVIDIA_API_KEY", None),
@@ -27,7 +28,7 @@ PRESETS = {
                  token_field='max_tokens', detail=None, reasoning='low', native=False,
                  api_format='messages',
                  reference='https://platform.claude.com/docs/en/models/opus-5-5/overview'),
-    'kimi': dict(ids=('kimi-k3.1-pro',), delivery='ordered-images', token_field='max_tokens',
+    'kimi': dict(ids=('kimi-k3.1-pro',), delivery='native', token_field='max_tokens',
                  detail=None, reasoning='low', native=True,
                  reference='https://docs.api.nvidia.com/nim/reference/moonshotai-kimi-k3_1-pro-infer'),
     'qwen': dict(ids=('qwen3.8-max-0902', 'qwen3.8-max-2026-09-02', 'qwen3.8-max'),
@@ -36,16 +37,16 @@ PRESETS = {
     'qwen-flash': dict(ids=('qwen3.8-flash',), delivery='video-frames', token_field='max_tokens',
                        detail=None, reasoning=None, native=True, enable_thinking=False,
                        reference='https://www.alibabacloud.com/help/en/model-studio/vision'),
-    'gemini-flash': dict(ids=('gemini-3.8-flash',), delivery='ordered-images', token_field='max_tokens',
+    'gemini-flash': dict(ids=('gemini-3.8-flash',), delivery='native', token_field='max_tokens',
                          detail=None, reasoning='low', native=True, native_video_part='image_url',
                          reference='https://aistudio.google.com/docs/openai'),
-    'gemini-carbon': dict(ids=('gemini-4-carbon',), delivery='ordered-images', token_field='max_tokens',
+    'gemini-carbon': dict(ids=('gemini-4-carbon',), delivery='native', token_field='max_tokens',
                          detail=None, reasoning='low', native=True, native_video_part='image_url',
                          reference='https://aistudio.google.com/docs/openai'),
-    'gemini-argon': dict(ids=('gemini-4-argon',), delivery='ordered-images', token_field='max_tokens',
+    'gemini-argon': dict(ids=('gemini-4-argon',), delivery='native', token_field='max_tokens',
                          detail=None, reasoning='low', native=True, native_video_part='image_url',
                          reference='https://aistudio.google.com/docs/openai'),
-    'gemini-hydrogen': dict(ids=('gemini-4-hydrogen',), delivery='ordered-images', token_field='max_tokens',
+    'gemini-hydrogen': dict(ids=('gemini-4-hydrogen',), delivery='native', token_field='max_tokens',
                             detail=None, reasoning='low', native=True, native_video_part='image_url',
                             reference='https://aistudio.google.com/docs/models/gemini-4-hydrogen'),
 }
@@ -56,6 +57,7 @@ ALIASES = {'astral': 'astra', 'gpt-6-astra': 'astra', 'opus5.5': 'opus', 'opus-5
            'gemini-4-carbon': 'gemini-carbon', 'gemini-4-argon': 'gemini-argon',
            'gemini-3.8-flash': 'gemini-flash'}
 ALIASES['gemini-4-hydrogen'] = 'gemini-hydrogen'
+ALIASES.update(argon='gemini-argon', carbon='gemini-carbon', hydrogen='gemini-hydrogen')
 
 
 def preset_name(value):
@@ -78,8 +80,11 @@ def model_ids(endpoint, key):
         if not ids or any(not re.fullmatch(r'[A-Za-z0-9_.:/-]+', m) for m in ids):
             raise ValueError('Invalid model list.')
         return ids
-    except (HTTPError, URLError, OSError, ValueError, KeyError, TypeError):
-        raise ValueError('Cannot read this account\'s /models list. Check the key and endpoint, or use --model-id with its exact model ID.') from None
+    except HTTPError as error:
+        detail = error.read(4096).decode('utf-8', errors='replace').replace(key, '[REDACTED]')
+        raise ValueError(f'Account model lookup failed (HTTP {error.code}): {detail}') from None
+    except (URLError, OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError(f'Cannot read this account\'s /models list ({type(error).__name__}).') from None
 
 
 def resolve_model(name, ids):
@@ -114,9 +119,14 @@ def messages_body(body):
         if part['type'] == 'text':
             content.append(part)
         elif part['type'] == 'image_url':
-            header, data = part['image_url']['url'].split(',', 1)
-            if header != 'data:image/png;base64': raise ValueError('Expected lossless PNG input.')
-            content.append(dict(type='image', source=dict(type='base64', media_type='image/png', data=data),
+            url = part['image_url']['url']
+            if trusted_download_url(url):
+                source = dict(type='url', url=url)
+            else:
+                header, data = url.split(',', 1)
+                if header != 'data:image/png;base64': raise ValueError('Expected lossless PNG input.')
+                source = dict(type='base64', media_type='image/png', data=data)
+            content.append(dict(type='image', source=source,
                                 transformations={'oversized_image': 'error'}))
         else:
             raise ValueError('Native Messages requires ordered images, not a video file.')

@@ -192,17 +192,18 @@ def test_model_shortcut_uses_vendor_fields_and_company_route(workflow, monkeypat
                             choices=[dict(finish_reason='stop', message=dict(content=answer))])
         return 200, {}, json.dumps(response).encode()
     monkeypatch.setattr(engine, 'transport', transport)
-    assert cli.main([name, *w.args, '--input', 'static']) == 0
+    assert cli.main([name, *w.args, '--input', 'static', '--image-transport', 'inline']) == 0
     assert len(sent) == 10
     assert not (w.out / 'video').exists()
     assert engine.verify(w.out / 'static/return.zip')['request_attempts'] == 10
 
 
-def test_gemini_native_shortcut_keeps_reference_and_resumes(workflow, monkeypatch):
+@pytest.mark.parametrize('name', ['gemini-argon', 'gemini-carbon', 'gemini-hydrogen', 'gemini-flash', 'kimi'])
+def test_native_shortcut_keeps_reference_and_resumes(workflow, monkeypatch, name):
     import base64
     w = workflow
-    exact = 'company/gemini-3.8-flash'
-    monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: [exact])
+    exact = 'company/' + cli.presets.PRESETS[name]['ids'][0]
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: [exact, 'company/gpt-6-astra', 'company/unrelated'])
     sent = []
     def transport(payload, key, config):
         body = json.loads(payload)
@@ -210,22 +211,44 @@ def test_gemini_native_shortcut_keeps_reference_and_resumes(workflow, monkeypatc
         assert body['model'] == exact and body['reasoning_effort'] == 'low'
         assert body['max_tokens'] == 4096 and 'temperature' not in body
         *parts, question = body['messages'][0]['content']
-        assert all(p['type'] == 'image_url' for p in parts)
-        is_video = any(p['image_url']['url'].startswith('data:video/') for p in parts)
+        video_kind = 'image_url' if name.startswith('gemini-') else 'video_url'
+        is_video = parts[-1][parts[-1]['type']]['url'].startswith('data:video/')
         if is_video:
-            assert config['native_video_part'] == 'image_url'
-            clip = base64.b64decode(parts[-1]['image_url']['url'].split(',')[1])
+            assert parts[-1]['type'] == video_kind
+            assert config.get('native_video_part', 'video_url') == video_kind
+            clip = base64.b64decode(parts[-1][video_kind]['url'].split(',')[1])
             assert b' video ' in clip
             if question['text'] == 'Match the target.':
                 assert len(parts) == 2 and parts[0]['image_url']['url'].startswith('data:image/png;')
         else:
             assert 'native_video_part' not in config
+            assert all(p['type'] == 'image_url' for p in parts)
         answer = 'YES' if question['text'] == 'Match the target.' else 'LEFT'
         return 200, {}, json.dumps(dict(model=exact, choices=[
             dict(finish_reason='stop', message=dict(content=answer))])).encode()
     monkeypatch.setattr(engine, 'transport', transport)
-    args = ['gemini-flash', *w.args, '--video', 'native']
-    assert cli.main(args) == 0
+    args = [name, *w.args]
+    if name == 'gemini-argon':
+        # The public entry needs only a menu selection and a key: no settings,
+        # explicit route, or media flag. Select among misleading catalog entries.
+        monkeypatch.chdir(w.root)
+        w.settings.unlink()
+        monkeypatch.setattr(cli.sys.stdin, 'isatty', lambda: True)
+        monkeypatch.setattr('builtins.input', lambda _: 'argon')
+        monkeypatch.setattr(cli.getpass, 'getpass', lambda _: 'private-test-credential')
+        downloads = []
+        def public_file(path, root=None):
+            downloads.append(path)
+            return w.root/path
+        monkeypatch.setattr(catalog, 'public_file', public_file)
+        assert cli.main([]) == 0
+        assert downloads and any(path.endswith('.mp4') for path in downloads)
+        outputs = list((w.root/'outputs').iterdir())
+        assert len(outputs) == 1
+        w.out = outputs[0]
+        args = ['argon', '--out', str(w.out)]
+    else:
+        assert cli.main(args) == 0
     assert len(sent) == 30
     assert cli.main(args) == 0
     assert len(sent) == 30
@@ -404,6 +427,184 @@ def test_unknown_settings_are_rejected_before_spending(workflow, monkeypatch, ca
     assert not w.sent
 
 
+@pytest.mark.parametrize('name', ['opus', 'qwen', 'qwen-flash'])
+def test_company_hf_urls_preserve_every_position_reference_and_resume(workflow, monkeypatch, name):
+    w = workflow
+    hf = engine.hf_images
+    exact = 'company/' + cli.presets.PRESETS[name]['ids'][0]
+    monkeypatch.setattr(cli.presets, 'model_ids', lambda *_: [exact])
+    rows = [*catalog.public_plan(None, None, 'video'), *catalog.public_plan(None, None, 'static')]
+    entries = {}
+    for row in rows:
+        for m in row['media']:
+            entries[m['sha256']] = dict(mime=m['mime'], source_bytes=(w.root/m['path']).stat().st_size,
+                png_sha256=([f'{i % 4:064x}' for i in range(180)] if m['mime']=='video/mp4' else [m['sha256']]),
+                fps=60, rgb_sha256='a'*64)
+    monkeypatch.setattr(hf, 'load_index', lambda *_: dict(sources=entries))
+    monkeypatch.setattr(hf, 'resolved_image_url', hf.image_url)
+    monkeypatch.setattr(catalog, 'public_media', lambda *_: pytest.fail('URL path downloaded video'))
+    monkeypatch.setattr(engine.native_video_api, 'ordered_pngs', lambda *_a, **_k: pytest.fail('URL path decoded video'))
+    sent = []
+    def transport(payload, key, config):
+        body = json.loads(payload)
+        parts = body['messages'][0]['content'][:-1]
+        video = body['messages'][0]['content'][-1]['text'].startswith(engine.ORDERED_IMAGE_VIDEO_PROMPT_PREFIX)
+        if name == 'opus':
+            urls = [p['source']['url'] for p in parts]
+            assert all(p['source']['type']=='url' for p in parts)
+            response = dict(model=exact, stop_reason='end_turn', content=[dict(type='text',text='LEFT')])
+        else:
+            urls = [u for p in parts for u in (p['video'] if p['type']=='video' else [p['image_url']['url']])]
+            if video:
+                assert parts[-1]['type']=='video' and parts[-1]['total_pixels']==180*393216
+            response = dict(model=exact,choices=[dict(finish_reason='stop',message=dict(content='LEFT'))])
+        assert all(u.startswith('https://huggingface.co/datasets/') and '?token' not in u for u in urls)
+        if video:
+            assert len(urls) in (180,181)
+            assert [u.rsplit('/',1)[1][:-4] for u in urls[-180:]] == [f'{i%4:064x}' for i in range(180)]
+            if len(urls)==181: assert urls[0] not in urls[1:]
+        assert len(payload)<100000 and b'private-test-credential' not in payload
+        sent.append(urls)
+        # T5 choices require YES/NO, keep the fake response valid for every task.
+        question=body['messages'][0]['content'][-1]['text']
+        if 'Match the target.' in question:
+            if name=='opus':response['content'][0]['text']='YES'
+            else:response['choices'][0]['message']['content']='YES'
+        return 200, {}, json.dumps(response).encode()
+    monkeypatch.setattr(engine,'transport',transport)
+    args=[name,*w.args]
+    assert cli.main(['test',*args])==0
+    assert len(sent)==20
+    assert cli.main(args)==0
+    count=len(sent)
+    assert count==30
+    assert cli.main(args)==0 and len(sent)==count
+    for mode in ('video','static'):
+        engine.verify(w.out/mode/'return.zip')
+        config=json.loads((w.out/mode/'config.json').read_text())
+        assert config['hf_image_urls']==hf.descriptor()
+
+
+def test_model_lookup_failure_returns_safe_support_package(workflow, monkeypatch):
+    w = workflow
+    def fail(*_):
+        raise ValueError('HTTP 403: private-test-credential')
+    monkeypatch.setattr(cli.presets, 'model_ids', fail)
+    assert cli.main(['opus', *w.args]) == 2
+    with ZipFile(w.out/'support.zip') as z:
+        report=z.read('diagnostic.json')
+    assert b'HTTP 403' in report and b'[REDACTED]' in report
+    assert b'private-test-credential' not in report and not w.sent
+
+
+def test_interactive_model_menu_can_exit_without_requests(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys.stdin, 'isatty', lambda: True)
+    choices=iter(['invalid', 'q'])
+    monkeypatch.setattr('builtins.input', lambda _: next(choices))
+    assert cli.main([])==0
+    assert 'gemini-argon' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('name', list(cli.presets.PRESETS))
+def test_every_default_menu_route_needs_only_company_key(workflow, monkeypatch, name):
+    """Exercise the public menu through the real HTTP request builder, without billing."""
+    w = workflow
+    exact = 'company/' + cli.presets.PRESETS[name]['ids'][0]
+    rows = [*catalog.public_plan(None, None, 'video'), *catalog.public_plan(None, None, 'static')]
+    sources = {m['sha256']: dict(mime=m['mime'], source_bytes=(w.root/m['path']).stat().st_size,
+        png_sha256=([f'{i%4:064x}' for i in range(180)] if m['mime']=='video/mp4' else [m['sha256']]),
+        fps=60, rgb_sha256='a'*64) for row in rows for m in row['media']}
+    hf = engine.hf_images
+    monkeypatch.setattr(hf, 'load_index', lambda *_: dict(sources=sources))
+    monkeypatch.setattr(hf, 'resolved_image_url', hf.image_url)
+    inline = ['data:image/png;base64,' + base64.b64encode(f'frame-{i}'.encode()).decode() for i in range(180)]
+    monkeypatch.setattr(engine.native_video_api, 'ordered_pngs', lambda *_a, **_kw: (inline, 'a'*64))
+    downloads, sent = [], []
+    def public_file(path, root=None):
+        downloads.append(path)
+        return w.root/path
+    monkeypatch.setattr(catalog, 'public_file', public_file)
+    def open_request(request, timeout):
+        assert request.get_header('Authorization') == 'Bearer private-test-credential'
+        base = 'https://inference-api.nvidia.com/v1'
+        if request.full_url == base+'/models':
+            response = {'data': [{'id': 'company/'+p['ids'][0]} for p in cli.presets.PRESETS.values()]}
+        else:
+            assert request.full_url == base+('/messages' if name=='opus' else '/chat/completions')
+            body = json.loads(request.data)
+            assert body['model'] == exact and not body['stream']
+            assert body[cli.presets.PRESETS[name]['token_field']] == 4096
+            assert b'private-test-credential' not in request.data
+            parts, question = body['messages'][0]['content'][:-1], body['messages'][0]['content'][-1]['text']
+            if name=='opus':
+                assert request.get_header('Anthropic-version')
+                assert all(p['source']['type']=='url' and p['transformations']=={'oversized_image':'error'} for p in parts)
+                assert body['output_config']=={'effort':'low'}
+                assert len(parts) in (180,181) if question.startswith(engine.ORDERED_IMAGE_VIDEO_PROMPT_PREFIX) else len(parts)<=4
+            elif name.startswith('qwen'):
+                assert body['enable_thinking'] is False
+                if question.startswith(engine.ORDERED_IMAGE_VIDEO_PROMPT_PREFIX):
+                    assert parts[-1]['type']=='video' and len(parts[-1]['video'])==180
+                    assert parts[-1]['min_pixels']==parts[-1]['max_pixels']==393216
+                    if 'Match the target.' in question: assert parts[0]['type']=='image_url'
+            elif name=='astra':
+                assert all(p['image_url']['detail']=='original' for p in parts)
+                if question.startswith(engine.ORDERED_IMAGE_VIDEO_PROMPT_PREFIX):
+                    assert [p['image_url']['url'] for p in parts[-180:]] == inline
+            else:
+                kind = 'image_url' if name.startswith('gemini') else 'video_url'
+                if parts[-1][parts[-1]['type']]['url'].startswith('data:video/'):
+                    assert parts[-1]['type']==kind
+                    if 'Match the target.' in question:
+                        assert len(parts)==2 and parts[0]['image_url']['url'].startswith('data:image/png;')
+            answer = 'YES' if 'Match the target.' in question else 'LEFT'
+            response = (dict(model=exact, stop_reason='end_turn', content=[dict(type='text',text=answer)])
+                        if name=='opus' else dict(model=exact,choices=[dict(finish_reason='stop',message=dict(content=answer))]))
+            sent.append(body)
+        result = BytesIO(json.dumps(response).encode())
+        result.status, result.headers = 200, {}
+        return result
+    monkeypatch.setattr(engine, 'build_opener', lambda *_: SimpleNamespace(open=open_request))
+    monkeypatch.setattr(cli.presets, 'build_opener', lambda *_: SimpleNamespace(open=open_request))
+    monkeypatch.chdir(w.root)
+    w.settings.unlink()
+    monkeypatch.setattr(cli.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda _: name)
+    monkeypatch.setattr(cli.getpass, 'getpass', lambda _: 'private-test-credential')
+    assert cli.main([])==0 and len(sent)==30
+    assert cli.main([])==0 and len(sent)==30
+    if name in {'opus','qwen','qwen-flash'}: assert not downloads
+    else: assert any(p.endswith('.mp4') for p in downloads)
+    output, = (w.root/'outputs').iterdir()
+    assert (output/'submission.zip.sha256').is_file()
+    for mode, count in [('video',20),('static',10)]:
+        assert engine.verify(output/mode/'return.zip')['request_attempts']==count
+
+
+def test_hf_cdn_cache_refresh_and_hash_binding(monkeypatch):
+    import huggingface_hub
+    hf=engine.hf_images
+    clock=[10000.0]
+    calls=[]
+    monkeypatch.setattr(hf,'_URL_CACHE',{})
+    monkeypatch.setattr(hf,'_LAST_HEAD',0.0)
+    monkeypatch.setattr(hf.time,'time',lambda:clock[0])
+    monkeypatch.setattr(hf.time,'sleep',lambda _:None)
+    def metadata(url,token):
+        assert token is False
+        calls.append(url)
+        return SimpleNamespace(etag='a'*64,location=f'https://us.aws.cdn.hf.co/opaque?Expires={clock[0]+3600}')
+    monkeypatch.setattr(huggingface_hub,'get_hf_file_metadata',metadata)
+    first=hf.resolved_image_url('a'*64,hf.descriptor())
+    assert hf.resolved_image_url('a'*64,hf.descriptor())==first and len(calls)==1
+    clock[0]+=3100
+    assert hf.resolved_image_url('a'*64,hf.descriptor())!=first and len(calls)==2
+    with pytest.raises(ValueError,match='different PNG'):
+        hf.resolved_image_url('b'*64,hf.descriptor())
+    assert not hf.trusted_download_url('https://us.aws.cdn.hf.co.attacker.example/image.png')
+    assert not hf.trusted_download_url('http://huggingface.co/image.png')
+
+
 def test_settings_file_reasoning_is_checked_like_cli(workflow, capsys):
     w = workflow
     w.settings.write_text(json.dumps(dict(model='qwen', reasoning_effort='medium')))
@@ -425,7 +626,7 @@ def test_minimum_thinking_rejection_never_falls_back(workflow, monkeypatch, name
         else: assert body['enable_thinking'] is False
         return 400, {}, b'{"error":"unsupported thinking parameter"}'
     monkeypatch.setattr(engine, 'transport', reject)
-    args = [name, *w.args, '--input', 'static']
+    args = [name, *w.args, '--input', 'static', '--image-transport', 'inline']
     assert cli.main(args) == 2
     assert cli.main(args) == 2
     assert len(requests) == 1

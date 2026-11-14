@@ -27,6 +27,7 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 from .. import catalog as release
 from ..release import select_samples
 from . import native_video_api
+from . import hf_images
 from .provider_api import ROUTES, messages_body
 
 SCHEMA = "provider-eval-v1"
@@ -181,8 +182,10 @@ def configured(
     out, plan, model, max_tokens, provider=PROVIDER, all_frames=False,
     generation_parameters=None, preset=None,
     *, video_delivery=None, image_detail=None, token_field=None, api_format=None, native_video_part=None,
-    claude_files=False, direct_panel=False,
+    claude_files=False, direct_panel=False, hf_image_urls=False,
 ):
+    if hf_image_urls and video_delivery is None:
+        video_delivery = 'ordered-images'
     release.require(
         bool(model) and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]+", model)),
         "Set --model to the exact provider model ID",
@@ -288,6 +291,14 @@ def configured(
         )
     if config.get("api_format") == "messages":
         config["transport"] = "native Anthropic Messages with inline lossless PNG images"
+    if hf_image_urls:
+        release.require(provider == PROVIDER and video_delivery in (None, *GATEWAY_FRAME_DELIVERIES),
+                        'HF PNG URLs require the company image route')
+        config.update(hf_image_urls=hf_images.descriptor(),
+                      transport='pinned HF lossless PNGs through refreshed public CDN URLs',
+                      media_verification='PNG bytes and ordered RGB verified at publication; index SHA and CDN ETags verified by client',
+                      processor_visibility='server processor unobserved; PNG identities bind the publication-verified frames')
+        config['code_sha256']['hf_images.py'] = file_sha(Path(hf_images.__file__))
     if claude_files:
         config.update(
             claude_files=True,
@@ -595,7 +606,16 @@ def request_body(row, config, media_root, *, download_missing=False):
     media = []
     frame_parts = []
     verified = []
-    for item in row["media"]:
+    if config.get('hf_image_urls'):
+        url_parts, verified = hf_images.parts(row, config['hf_image_urls'])
+        if config.get('video_delivery') == 'video-frames' and row['input'] == 'video':
+            # References precede the video; preserve all 180 video positions.
+            refs = len(url_parts) - 180
+            frame_parts = [*url_parts[:refs], dict(type='video', video=[p['image_url']['url'] for p in url_parts[refs:]],
+                min_pixels=393216, max_pixels=393216, total_pixels=180*393216)]
+        else:
+            frame_parts = url_parts
+    for item in ([] if config.get('hf_image_urls') else row["media"]):
         local = media_root / item["path"] if media_root is not None else None
         if local is None:
             data = release.public_media(item)
@@ -914,6 +934,7 @@ def execution(out, plan, rows, args, pilot):
         native_video_part=getattr(args, 'native_video_part', None),
         claude_files=claude_files,
         direct_panel=direct_panel,
+        hf_image_urls=getattr(args, 'hf_image_urls', False),
     )
     with closing(open_db(out)) as db:
         history = records(db)
@@ -1328,6 +1349,14 @@ def verify(archive, *, with_history=False):
                 )
                 native_video_api.vllm_endpoint(config["endpoint"])
             gateway_frames = config.get("video_delivery") in GATEWAY_FRAME_DELIVERIES
+            if config.get('hf_image_urls'):
+                spec = config['hf_image_urls']
+                release.require(provider == PROVIDER and config.get('video_delivery') in (None, *GATEWAY_FRAME_DELIVERIES)
+                                and spec.get('repo') == release.REPO and spec.get('prefix') == hf_images.PREFIX
+                                and spec.get('source_revision') == plan['revision']
+                                and bool(re.fullmatch(r'[0-9a-f]{40}', spec.get('revision', '')))
+                                and bool(re.fullmatch(r'[0-9a-f]{64}', spec.get('index_sha256', ''))),
+                                'Invalid pinned HF image release')
             if "video_delivery" in config:
                 release.require(
                     provider == PROVIDER
@@ -1628,6 +1657,7 @@ def main(argv=None):
     parser.add_argument("--claude-files", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument('--direct-panel', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--native-video-part', choices=('image_url', 'video_url'))
+    parser.add_argument('--hf-image-urls', action='store_true', help='Use the pinned lossless HF PNG release')
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--temperature", type=float)
     parser.add_argument("--top-p", type=float)

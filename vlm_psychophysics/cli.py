@@ -125,6 +125,27 @@ def evaluation(out, modes=None):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv and sys.stdin.isatty():
+        choices = ['gemini-argon', 'gemini-carbon', 'kimi', 'qwen', 'opus', 'astra',
+                   'qwen-flash', 'gemini-hydrogen', 'gemini-flash']
+        print('Choose a model (NVIDIA company key):')
+        for number, name in enumerate(choices, 1):
+            print(f'  {number}. {name:18} {presets.PRESETS[name]["ids"][0]}')
+        print('Runs the frozen video and static comparisons, starting with short pilots.')
+        while True:
+            try:
+                choice = input('Model number/name, or q to quit: ').strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return 0
+            if choice in {'q', 'quit'}:
+                return 0
+            if choice.isdigit() and 1 <= int(choice) <= len(choices):
+                choice = choices[int(choice)-1]
+            choice = presets.preset_name(choice)
+            if choice in choices:
+                argv = [choice]
+                break
+            print('Choose a listed model number or name.')
     if argv[:1] == ['api']:
         return engine.main(argv[1:])
     commands = ('run', 'test', 'eval', 'plan', 'models', 'settings')
@@ -148,6 +169,8 @@ def main(argv=None):
     extra.add_argument('--model-id', help='Exact account-specific route if /models is unavailable or ambiguous')
     extra.add_argument('--api-format', choices=('chat', 'messages'), help='Override the gateway protocol (Opus defaults to Messages)')
     extra.add_argument('--video', choices=('native', 'images'), help='Explicit transport override; native may sample frames')
+    extra.add_argument('--image-transport', choices=('hf', 'inline'),
+                       help='Company image transport; Opus/Qwen default to published lossless HF URLs')
     extra.add_argument('--max-tokens', type=int, help='Output cap, including reasoning where supported (default: 4096)')
     extra.add_argument('--concurrency', type=int, help='Concurrent requests after pilots (default: 1)')
     extra.add_argument('--retry-failed', action='store_true',
@@ -194,6 +217,10 @@ def main(argv=None):
                     engine.native_video_api.vllm_endpoint(args.base_url or settings.get('base_url', engine.BASE_URL)))
         delivery = options.get('video_delivery', 'ordered-images')
         if direct: delivery = 'video-frames' if direct == 'qwen-frames' else 'ordered-images' if direct == 'claude' else 'native'
+        use_hf = not direct and delivery in engine.GATEWAY_FRAME_DELIVERIES and (
+            args.image_transport == 'hf' or (args.image_transport is None and name in {'opus', 'qwen', 'qwen-flash'}))
+        if args.image_transport and (direct or (args.image_transport == 'hf' and delivery == 'native')):
+            raise ValueError('--image-transport applies to company image input, not native video or --direct.')
         if delivery not in engine.GATEWAY_VIDEO_DELIVERIES: raise ValueError('Unknown video delivery.')
         if preset and options.get('reasoning_effort'):
             allowed = {'astra': {'low','medium','high','xhigh','max'}, 'kimi': {'low','medium','high','max'},
@@ -234,6 +261,8 @@ def main(argv=None):
             run_settings['image_transport'] = 'inline PNG or Anthropic Files API for larger requests'
         if direct in {'qwen', 'qwen-frames'}:
             run_settings['media_transport'] = 'inline or official 48-hour OSS references, unchanged bytes'
+        if use_hf:
+            run_settings['hf_image_urls'] = engine.hf_images.descriptor()
         if not direct and preset and delivery == 'native' and preset.get('native_video_part'):
             run_settings['native_video_part'] = preset['native_video_part']
         if args.command == 'settings':
@@ -321,6 +350,7 @@ def main(argv=None):
                 else:
                     common += ['--token-field',run_settings['token_field'], '--api-format',run_settings['api_format']]
                     if mode == 'video': common += ['--video-delivery', delivery]
+                    if use_hf: common += ['--hf-image-urls']
                 if mode == 'video' and run_settings.get('native_video_part'):
                     common += ['--native-video-part', run_settings['native_video_part']]
                 if run_settings['image_detail']: common += ['--image-detail', run_settings['image_detail']]
@@ -378,7 +408,22 @@ def main(argv=None):
                 if value is None: os.environ.pop(name, None)
                 else: os.environ[name] = value
     except (ValueError, OSError, KeyError, EOFError) as error:
-        print(f'ERROR: {error}', file=sys.stderr)
+        message = str(error)
+        if locals().get('key'):
+            message = message.replace(key, '[REDACTED]')
+        print(f'ERROR: {message}', file=sys.stderr)
+        if args.command in {'run', 'test'} and 'endpoint' in locals():
+            folder = locals().get('out') or args.out or Path('outputs') / (re.sub(r'[^A-Za-z0-9_.-]', '-', name)+'-support')
+            folder.mkdir(parents=True, exist_ok=True)
+            support = folder/'support.zip'
+            report = dict(schema='api-support-v1', endpoint=endpoint, model=locals().get('model', name),
+                          error=message, dataset_revision=release.REVISION)
+            with ZipFile(support, 'w', ZIP_DEFLATED) as z:
+                z.writestr('diagnostic.json', json.dumps(report, indent=2))
+                for mode in ('video', 'static'):
+                    p = folder/mode/'return.zip'
+                    if p.exists(): z.write(p, f'{mode}/return.zip')
+            print(f'Send this file to the benchmark maintainer; no code changes needed: {support}', file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print('\nStopped. Run the same command to resume saved work.', file=sys.stderr)
